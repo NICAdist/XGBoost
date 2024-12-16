@@ -1,0 +1,2 @@
+git clone --recursive --single-branch -b v2.1.3 https://github.com/dmlc/xgboost.git tmp213-xgboost
+Remove *exe* from .gitignore (or change to *exe), otherwise some source files will be ignored.
