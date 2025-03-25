@@ -1,5 +1,5 @@
 /**
- * Copyright 2014-2024, XGBoost Contributors
+ * Copyright 2014-2025, XGBoost Contributors
  * \file gblinear.cc
  * \brief Implementation of Linear booster, with L1/L2 regularization: Elastic Net
  *        the update rule is parallel coordinate descent (shotgun)
@@ -10,12 +10,12 @@
 
 #include <algorithm>
 #include <numeric>
-#include <sstream>
 #include <string>
 #include <vector>
 
 #include "../common/common.h"
-#include "../common/error_msg.h"  // NoCategorical, DeprecatedFunc
+#include "../common/cuda_rt_utils.h"  // for AllVisibleGPUs
+#include "../common/error_msg.h"      // NoCategorical, DeprecatedFunc
 #include "../common/threading_utils.h"
 #include "../common/timer.h"
 #include "gblinear_model.h"
@@ -37,7 +37,7 @@ struct GBLinearTrainParam : public XGBoostParameter<GBLinearTrainParam> {
   size_t max_row_perbatch;
 
   void CheckGPUSupport() {
-    auto n_gpus = common::AllVisibleGPUs();
+    auto n_gpus = curt::AllVisibleGPUs();
     if (n_gpus == 0 && this->updater == "gpu_coord_descent") {
       common::AssertGPUSupport();
       this->UpdateAllowUnknown(Args{{"updater", "coord_descent"}});
@@ -162,17 +162,6 @@ class GBLinear : public GradientBooster {
     auto* out_preds = &predts->predictions;
     this->PredictBatchInternal(p_fmat, &out_preds->HostVector());
     monitor_.Stop("PredictBatch");
-  }
-  // add base margin
-  void PredictInstance(const SparsePage::Inst& inst, std::vector<bst_float>* out_preds,
-                       uint32_t layer_begin, uint32_t) override {
-    LinearCheckLayer(layer_begin);
-    const int ngroup = model_.learner_model_param->num_output_group;
-
-    auto base_score = learner_model_param_->BaseScore(ctx_);
-    for (int gid = 0; gid < ngroup; ++gid) {
-      this->Pred(inst, dmlc::BeginPtr(*out_preds), gid, base_score(0));
-    }
   }
 
   void PredictLeaf(DMatrix *, HostDeviceVector<bst_float> *, unsigned, unsigned) override {

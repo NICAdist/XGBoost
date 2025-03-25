@@ -1,49 +1,50 @@
 /**
- * Copyright 2014-2024, XGBoost Contributors
+ * Copyright 2014-2025, XGBoost Contributors
  */
 #include "xgboost/c_api.h"
 
-#include <algorithm>                         // for copy, transform
-#include <cinttypes>                         // for strtoimax
-#include <cmath>                             // for nan
-#include <cstring>                           // for strcmp
-#include <limits>                            // for numeric_limits
-#include <map>                               // for operator!=, _Rb_tree_const_iterator, _Rb_tre...
-#include <memory>                            // for shared_ptr, allocator, __shared_ptr_access
-#include <string>                            // for char_traits, basic_string, operator==, string
-#include <system_error>                      // for errc
-#include <utility>                           // for pair
-#include <vector>                            // for vector
+#include <algorithm>     // for copy, transform
+#include <cinttypes>     // for strtoimax
+#include <cmath>         // for nan
+#include <cstring>       // for strcmp
+#include <limits>        // for numeric_limits
+#include <map>           // for operator!=, _Rb_tree_const_iterator, _Rb_tre...
+#include <memory>        // for shared_ptr, allocator, __shared_ptr_access
+#include <string>        // for char_traits, basic_string, operator==, string
+#include <system_error>  // for errc
+#include <utility>       // for pair
+#include <vector>        // for vector
 
-#include "../common/api_entry.h"             // for XGBAPIThreadLocalEntry
-#include "../common/charconv.h"              // for from_chars, to_chars, NumericLimits, from_ch...
-#include "../common/error_msg.h"             // for NoFederated
-#include "../common/hist_util.h"             // for HistogramCuts
-#include "../common/io.h"                    // for FileExtension, LoadSequentialFile, MemoryBuf...
-#include "../common/threading_utils.h"       // for OmpGetNumThreads, ParallelFor
-#include "../data/adapter.h"                 // for ArrayAdapter, DenseAdapter, RecordBatchesIte...
-#include "../data/ellpack_page.h"            // for EllpackPage
-#include "../data/proxy_dmatrix.h"           // for DMatrixProxy
-#include "../data/simple_dmatrix.h"          // for SimpleDMatrix
-#include "c_api_error.h"                     // for xgboost_CHECK_C_ARG_PTR, API_END, API_BEGIN
-#include "c_api_utils.h"                     // for RequiredArg, OptionalArg, GetMissing, CastDM...
-#include "dmlc/base.h"                       // for BeginPtr
-#include "dmlc/io.h"                         // for Stream
-#include "dmlc/parameter.h"                  // for FieldAccessEntry, FieldEntry, ParamManager
-#include "dmlc/thread_local.h"               // for ThreadLocalStore
-#include "xgboost/base.h"                    // for bst_ulong, bst_float, GradientPair, bst_feat...
-#include "xgboost/context.h"                 // for Context
-#include "xgboost/data.h"                    // for DMatrix, MetaInfo, DataType, ExtSparsePage
-#include "xgboost/feature_map.h"             // for FeatureMap
-#include "xgboost/global_config.h"           // for GlobalConfiguration, GlobalConfigThreadLocal...
-#include "xgboost/host_device_vector.h"      // for HostDeviceVector
-#include "xgboost/json.h"                    // for Json, get, Integer, IsA, Boolean, String
-#include "xgboost/learner.h"                 // for Learner, PredictionType
-#include "xgboost/logging.h"                 // for LOG_FATAL, LogMessageFatal, CHECK, LogCheck_EQ
-#include "xgboost/predictor.h"               // for PredictionCacheEntry
-#include "xgboost/span.h"                    // for Span
-#include "xgboost/string_view.h"             // for StringView, operator<<
-#include "xgboost/version_config.h"          // for XGBOOST_VER_MAJOR, XGBOOST_VER_MINOR, XGBOOS...
+#include "../common/api_entry.h"         // for XGBAPIThreadLocalEntry
+#include "../common/charconv.h"          // for from_chars, to_chars, NumericLimits, from_ch...
+#include "../common/error_msg.h"         // for NoFederated
+#include "../common/hist_util.h"         // for HistogramCuts
+#include "../common/io.h"                // for FileExtension, LoadSequentialFile, MemoryBuf...
+#include "../common/threading_utils.h"   // for OmpGetNumThreads, ParallelFor
+#include "../data/adapter.h"             // for ArrayAdapter, DenseAdapter, RecordBatchesIte...
+#include "../data/batch_utils.h"         // for MatchingPageBytes, CachePageRatio
+#include "../data/ellpack_page.h"        // for EllpackPage
+#include "../data/proxy_dmatrix.h"       // for DMatrixProxy
+#include "../data/simple_dmatrix.h"      // for SimpleDMatrix
+#include "c_api_error.h"                 // for xgboost_CHECK_C_ARG_PTR, API_END, API_BEGIN
+#include "c_api_utils.h"                 // for RequiredArg, OptionalArg, GetMissing, CastDM...
+#include "dmlc/base.h"                   // for BeginPtr
+#include "dmlc/io.h"                     // for Stream
+#include "dmlc/parameter.h"              // for FieldAccessEntry, FieldEntry, ParamManager
+#include "dmlc/thread_local.h"           // for ThreadLocalStore
+#include "xgboost/base.h"                // for bst_ulong, bst_float, GradientPair, bst_feat...
+#include "xgboost/context.h"             // for Context
+#include "xgboost/data.h"                // for DMatrix, MetaInfo, DataType, ExtSparsePage
+#include "xgboost/feature_map.h"         // for FeatureMap
+#include "xgboost/global_config.h"       // for GlobalConfiguration, GlobalConfigThreadLocal...
+#include "xgboost/host_device_vector.h"  // for HostDeviceVector
+#include "xgboost/json.h"                // for Json, get, Integer, IsA, Boolean, String
+#include "xgboost/learner.h"             // for Learner, PredictionType
+#include "xgboost/logging.h"             // for LOG_FATAL, LogMessageFatal, CHECK, LogCheck_EQ
+#include "xgboost/predictor.h"           // for PredictionCacheEntry
+#include "xgboost/span.h"                // for Span
+#include "xgboost/string_view.h"         // for StringView, operator<<
+#include "xgboost/version_config.h"      // for XGBOOST_VER_MAJOR, XGBOOST_VER_MINOR, XGBOOS...
 
 using namespace xgboost; // NOLINT(*);
 
@@ -75,7 +76,7 @@ void XGBBuildInfoDevice(Json *p_info) {
 #endif
 
 XGB_DLL int XGBuildInfo(char const **out) {
-  API_BEGIN();
+  API_BEGIN_UNGUARD()
   xgboost_CHECK_C_ARG_PTR(out);
   Json info{Object{}};
 
@@ -101,6 +102,10 @@ XGB_DLL int XGBuildInfo(char const **out) {
   info["GCC_VERSION"] = std::vector<Json>{Json{Integer{__GNUC__}}, Json{Integer{__GNUC_MINOR__}},
                                           Json{Integer{__GNUC_PATCHLEVEL__}}};
 #endif
+
+#if defined(__GLIBC__)
+  info["GLIBC_VERSION"] = std::vector<Json>{Json{__GLIBC__}, Json{__GLIBC_MINOR__}};
+#endif  // defined(__GLIBC__)
 
 #if defined(__clang__)
   info["CLANG_VERSION"] =
@@ -130,19 +135,31 @@ XGB_DLL int XGBuildInfo(char const **out) {
 }
 
 XGB_DLL int XGBRegisterLogCallback(void (*callback)(const char*)) {
-  API_BEGIN_UNGUARD();
+  API_BEGIN_UNGUARD()
   LogCallbackRegistry* registry = LogCallbackRegistryStore::Get();
   registry->Register(callback);
   API_END();
 }
 
 XGB_DLL int XGBSetGlobalConfig(const char* json_str) {
-  API_BEGIN();
+  API_BEGIN_UNGUARD()
 
   xgboost_CHECK_C_ARG_PTR(json_str);
   Json config{Json::Load(StringView{json_str})};
 
-  for (auto& items : get<Object>(config)) {
+  // handle nthread, it's not a dmlc parameter.
+  auto& obj = get<Object>(config);
+  auto it = obj.find("nthread");
+  if (it != obj.cend()) {
+    auto nthread = OptionalArg<Integer>(config, "nthread", Integer::Int{0});
+    if (nthread > 0) {
+      omp_set_num_threads(nthread);
+      GlobalConfigThreadLocalStore::Get()->nthread = nthread;
+    }
+    get<Object>(config).erase("nthread");
+  }
+
+  for (auto &items : obj) {
     switch (items.second.GetValue().Type()) {
     case xgboost::Value::ValueKind::kInteger: {
       items.second = String{std::to_string(get<Integer const>(items.second))};
@@ -182,11 +199,12 @@ XGB_DLL int XGBSetGlobalConfig(const char* json_str) {
     }
     LOG(FATAL) << ss.str()  << " }";
   }
+
   API_END();
 }
 
 XGB_DLL int XGBGetGlobalConfig(const char** json_str) {
-  API_BEGIN();
+  API_BEGIN_UNGUARD()
   auto const& global_config = *GlobalConfigThreadLocalStore::Get();
   Json config {ToJson(global_config)};
   auto const* mgr = global_config.__MANAGER__();
@@ -215,6 +233,7 @@ XGB_DLL int XGBGetGlobalConfig(const char** json_str) {
     }
   }
 
+  config["nthread"] = GlobalConfigThreadLocalStore::Get()->nthread;
   auto& local = *GlobalConfigAPIThreadLocalStore::Get();
   Json::Dump(config, &local.ret_str);
 
@@ -226,6 +245,8 @@ XGB_DLL int XGBGetGlobalConfig(const char** json_str) {
 XGB_DLL int XGDMatrixCreateFromFile(const char *fname, int silent, DMatrixHandle *out) {
   xgboost_CHECK_C_ARG_PTR(fname);
   xgboost_CHECK_C_ARG_PTR(out);
+
+  LOG(WARNING) << error::DeprecatedFunc(__func__, "2.0.0", "XGDMatrixCreateFromURI");
 
   Json config{Object()};
   config["uri"] = std::string{fname};
@@ -253,7 +274,9 @@ XGB_DLL int XGDMatrixCreateFromURI(const char *config, DMatrixHandle *out) {
 XGB_DLL int XGDMatrixCreateFromDataIter(
     void *data_handle,                  // a Java iterator
     XGBCallbackDataIterNext *callback,  // C++ callback defined in xgboost4j.cpp
-    const char *cache_info, DMatrixHandle *out) {
+    const char *cache_info,
+    float missing,
+    DMatrixHandle *out) {
   API_BEGIN();
 
   std::string scache;
@@ -264,10 +287,7 @@ XGB_DLL int XGDMatrixCreateFromDataIter(
       data_handle, callback);
   xgboost_CHECK_C_ARG_PTR(out);
   *out = new std::shared_ptr<DMatrix> {
-    DMatrix::Create(
-        &adapter, std::numeric_limits<float>::quiet_NaN(),
-        1, scache
-    )
+    DMatrix::Create(&adapter, missing, 1, scache)
   };
   API_END();
 }
@@ -297,34 +317,27 @@ XGB_DLL int XGDMatrixCreateFromCallback(DataIterHandle iter, DMatrixHandle proxy
   auto jconfig = Json::Load(StringView{config});
   auto missing = GetMissing(jconfig);
   std::string cache = RequiredArg<String>(jconfig, "cache_prefix", __func__);
-  auto n_threads = OptionalArg<Integer, int64_t>(jconfig, "nthread", 0);
+  std::int32_t n_threads = OptionalArg<Integer, std::int64_t>(jconfig, "nthread", 0);
+  auto on_host = OptionalArg<Boolean>(jconfig, "on_host", false);
+  auto min_cache_page_bytes = OptionalArg<Integer, std::int64_t>(jconfig, "min_cache_page_bytes",
+                                                                 cuda_impl::MatchingPageBytes());
+  CHECK_EQ(min_cache_page_bytes, cuda_impl::MatchingPageBytes())
+      << "Page concatenation is not supported by the DMatrix yet.";
 
   xgboost_CHECK_C_ARG_PTR(next);
   xgboost_CHECK_C_ARG_PTR(reset);
   xgboost_CHECK_C_ARG_PTR(out);
 
+  auto config = ExtMemConfig{
+      cache, on_host, min_cache_page_bytes, missing, /*max_num_device_pages=*/0, n_threads};
   *out = new std::shared_ptr<xgboost::DMatrix>{
-      xgboost::DMatrix::Create(iter, proxy, reset, next, missing, n_threads, cache)};
+      xgboost::DMatrix::Create(iter, proxy, reset, next, config)};
   API_END();
 }
 
-XGB_DLL int XGDeviceQuantileDMatrixCreateFromCallback(DataIterHandle iter, DMatrixHandle proxy,
-                                                      DataIterResetCallback *reset,
-                                                      XGDMatrixCallbackNext *next, float missing,
-                                                      int nthread, int max_bin,
-                                                      DMatrixHandle *out) {
-  API_BEGIN();
-  LOG(WARNING) << error::DeprecatedFunc(__func__, "1.7.0", "XGQuantileDMatrixCreateFromCallback");
-  *out = new std::shared_ptr<xgboost::DMatrix>{
-      xgboost::DMatrix::Create(iter, proxy, nullptr, reset, next, missing, nthread, max_bin)};
-  API_END();
-}
 
-XGB_DLL int XGQuantileDMatrixCreateFromCallback(DataIterHandle iter, DMatrixHandle proxy,
-                                                DataIterHandle ref, DataIterResetCallback *reset,
-                                                XGDMatrixCallbackNext *next, char const *config,
-                                                DMatrixHandle *out) {
-  API_BEGIN();
+namespace {
+std::shared_ptr<DMatrix> GetRefDMatrix(DataIterHandle ref) {
   std::shared_ptr<DMatrix> _ref{nullptr};
   if (ref) {
     auto pp_ref = static_cast<std::shared_ptr<xgboost::DMatrix> *>(ref);
@@ -333,19 +346,64 @@ XGB_DLL int XGQuantileDMatrixCreateFromCallback(DataIterHandle iter, DMatrixHand
     _ref = *pp_ref;
     CHECK(_ref) << err;
   }
+  return _ref;
+}
+}  // namespace
+
+XGB_DLL int XGQuantileDMatrixCreateFromCallback(DataIterHandle iter, DMatrixHandle proxy,
+                                                DataIterHandle ref, DataIterResetCallback *reset,
+                                                XGDMatrixCallbackNext *next, char const *config,
+                                                DMatrixHandle *out) {
+  API_BEGIN();
+  std::shared_ptr<DMatrix> p_ref{GetRefDMatrix(ref)};
 
   xgboost_CHECK_C_ARG_PTR(config);
   auto jconfig = Json::Load(StringView{config});
   auto missing = GetMissing(jconfig);
   auto n_threads = OptionalArg<Integer, int64_t>(jconfig, "nthread", 0);
   auto max_bin = OptionalArg<Integer, int64_t>(jconfig, "max_bin", 256);
+  auto max_quantile_blocks = OptionalArg<Integer, std::int64_t>(
+      jconfig, "max_quantile_blocks", std::numeric_limits<std::int64_t>::max());
 
   xgboost_CHECK_C_ARG_PTR(next);
   xgboost_CHECK_C_ARG_PTR(reset);
   xgboost_CHECK_C_ARG_PTR(out);
 
-  *out = new std::shared_ptr<xgboost::DMatrix>{
-      xgboost::DMatrix::Create(iter, proxy, _ref, reset, next, missing, n_threads, max_bin)};
+  *out = new std::shared_ptr<xgboost::DMatrix>{xgboost::DMatrix::Create(
+      iter, proxy, p_ref, reset, next, missing, n_threads, max_bin, max_quantile_blocks)};
+  API_END();
+}
+
+XGB_DLL int XGExtMemQuantileDMatrixCreateFromCallback(DataIterHandle iter, DMatrixHandle proxy,
+                                                      DataIterHandle ref,
+                                                      DataIterResetCallback *reset,
+                                                      XGDMatrixCallbackNext *next,
+                                                      char const *config, DMatrixHandle *out) {
+  API_BEGIN();
+  std::shared_ptr<DMatrix> p_ref{GetRefDMatrix(ref)};
+
+  xgboost_CHECK_C_ARG_PTR(config);
+  auto jconfig = Json::Load(StringView{config});
+  auto missing = GetMissing(jconfig);
+  std::int32_t n_threads = OptionalArg<Integer, std::int64_t>(jconfig, "nthread", 0);
+  auto max_bin = OptionalArg<Integer, std::int64_t>(jconfig, "max_bin", 256);
+  auto on_host = OptionalArg<Boolean>(jconfig, "on_host", false);
+  std::string cache = RequiredArg<String>(jconfig, "cache_prefix", __func__);
+  auto min_cache_page_bytes = OptionalArg<Integer, std::int64_t>(jconfig, "min_cache_page_bytes",
+                                                                 cuda_impl::AutoCachePageBytes());
+  auto max_num_device_pages = OptionalArg<Integer, std::int64_t>(jconfig, "max_num_device_pages",
+                                                                 cuda_impl::MaxNumDevicePages());
+  auto max_quantile_blocks = OptionalArg<Integer, std::int64_t>(
+      jconfig, "max_quantile_blocks", std::numeric_limits<std::int64_t>::max());
+
+  xgboost_CHECK_C_ARG_PTR(next);
+  xgboost_CHECK_C_ARG_PTR(reset);
+  xgboost_CHECK_C_ARG_PTR(out);
+
+  auto config =
+      ExtMemConfig{cache, on_host, min_cache_page_bytes, missing, max_num_device_pages, n_threads};
+  *out = new std::shared_ptr<xgboost::DMatrix>{xgboost::DMatrix::Create(
+      iter, proxy, p_ref, reset, next, max_bin, max_quantile_blocks, config)};
   API_END();
 }
 
@@ -542,17 +600,6 @@ XGB_DLL int XGDMatrixCreateFromMat_omp(const bst_float* data,  // NOLINT
   data::DenseAdapter adapter(data, nrow, ncol);
   xgboost_CHECK_C_ARG_PTR(out);
   *out = new std::shared_ptr<DMatrix>(DMatrix::Create(&adapter, missing, nthread));
-  API_END();
-}
-
-XGB_DLL int XGDMatrixCreateFromDT(void** data, const char** feature_stypes,
-                                  xgboost::bst_ulong nrow,
-                                  xgboost::bst_ulong ncol, DMatrixHandle* out,
-                                  int nthread) {
-  API_BEGIN();
-  data::DataTableAdapter adapter(data, feature_stypes, nrow, ncol);
-  xgboost_CHECK_C_ARG_PTR(out);
-  *out = new std::shared_ptr<DMatrix>(DMatrix::Create(&adapter, std::nan(""), nthread));
   API_END();
 }
 
@@ -942,6 +989,13 @@ XGB_DLL int XGBoosterFree(BoosterHandle handle) {
   API_END();
 }
 
+XGB_DLL int XGBoosterReset(BoosterHandle handle) {
+  API_BEGIN();
+  CHECK_HANDLE();
+  static_cast<Learner *>(handle)->Reset();
+  API_END();
+}
+
 XGB_DLL int XGBoosterSetParam(BoosterHandle handle,
                               const char *name,
                               const char *value) {
@@ -1053,19 +1107,18 @@ XGB_DLL int XGBoosterTrainOneIter(BoosterHandle handle, DMatrixHandle dtrain, in
   ArrayInterface<2, false> i_grad{StringView{grad}};
   ArrayInterface<2, false> i_hess{StringView{hess}};
   StringView msg{"Mismatched shape between the gradient and hessian."};
-  CHECK_EQ(i_grad.Shape(0), i_hess.Shape(0)) << msg;
-  CHECK_EQ(i_grad.Shape(1), i_hess.Shape(1)) << msg;
+  CHECK_EQ(i_grad.Shape<0>(), i_hess.Shape<0>()) << msg;
+  CHECK_EQ(i_grad.Shape<1>(), i_hess.Shape<1>()) << msg;
   linalg::Matrix<GradientPair> gpair;
   auto grad_is_cuda = ArrayInterfaceHandler::IsCudaPtr(i_grad.data);
   auto hess_is_cuda = ArrayInterfaceHandler::IsCudaPtr(i_hess.data);
-  CHECK_EQ(i_grad.Shape(0), p_fmat->Info().num_row_)
+  CHECK_EQ(i_grad.Shape<0>(), p_fmat->Info().num_row_)
       << "Mismatched size between the gradient and training data.";
   CHECK_EQ(grad_is_cuda, hess_is_cuda) << "gradient and hessian should be on the same device.";
   auto *learner = static_cast<Learner *>(handle);
   auto ctx = learner->Ctx();
   if (!grad_is_cuda) {
-    gpair.Reshape(i_grad.Shape(0), i_grad.Shape(1));
-    auto const shape = gpair.Shape();
+    gpair.Reshape(i_grad.Shape<0>(), i_grad.Shape<1>());
     auto h_gpair = gpair.HostView();
     DispatchDType(i_grad, DeviceOrd::CPU(), [&](auto &&t_grad) {
       DispatchDType(i_hess, DeviceOrd::CPU(), [&](auto &&t_hess) {

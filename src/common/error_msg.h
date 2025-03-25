@@ -6,7 +6,7 @@
 #ifndef XGBOOST_COMMON_ERROR_MSG_H_
 #define XGBOOST_COMMON_ERROR_MSG_H_
 
-#include <cinttypes>  // for uint64_t
+#include <cstdint>    // for uint64_t
 #include <limits>     // for numeric_limits
 #include <string>     // for string
 
@@ -40,6 +40,8 @@ constexpr StringView InconsistentMaxBin() {
   return "Inconsistent `max_bin`. `max_bin` should be the same across different QuantileDMatrix, "
          "and consistent with the Booster being trained.";
 }
+
+constexpr StringView InvalidMaxBin() { return "`max_bin` must be equal to or greater than 2."; }
 
 constexpr StringView UnknownDevice() { return "Unknown device type."; }
 
@@ -102,6 +104,25 @@ inline auto NoFederated() { return "XGBoost is not compiled with federated learn
 
 inline auto NoCategorical(std::string name) {
   return name + " doesn't support categorical features.";
+}
+
+inline void NoPageConcat(bool concat_pages) {
+  if (concat_pages) {
+    LOG(FATAL) << "`extmem_single_page` must be false when there's no sampling or when it's "
+                  "running on the CPU.";
+  }
+}
+
+constexpr StringView InconsistentFeatureTypes() {
+  return "Inconsistent feature types between batches.";
+}
+
+void CheckOldNccl(std::int32_t major, std::int32_t minor, std::int32_t patch);
+
+constexpr StringView ZeroCudaMemory() {
+  return "No GPU memory is left, are you using RMM? If so, please install XGBoost with RMM "
+         "support. If you are using other types of memory pool, please consider reserving a "
+         "portion of the GPU memory for XGBoost.";
 }
 }  // namespace xgboost::error
 #endif  // XGBOOST_COMMON_ERROR_MSG_H_

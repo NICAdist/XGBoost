@@ -195,7 +195,7 @@ class TestFromColumnar:
     @pytest.mark.skipif(**tm.no_cudf())
     def test_cudf_categorical(self) -> None:
         n_features = 30
-        _X, _y = tm.make_categorical(100, n_features, 17, False)
+        _X, _y = tm.make_categorical(100, n_features, 17, onehot=False)
         X = cudf.from_pandas(_X)
         y = cudf.from_pandas(_y)
 
@@ -210,8 +210,8 @@ class TestFromColumnar:
         assert all(t == "c" for t in Xy.feature_types)
 
         # mixed dtypes
-        X["1"] = X["1"].astype(np.int64)
-        X["3"] = X["3"].astype(np.int64)
+        X["0"] = X["0"].astype(np.int64)
+        X["2"] = X["2"].astype(np.int64)
         df, cat_codes, _, _ = xgb.data._transform_cudf_df(
             X, None, None, enable_categorical=True
         )
@@ -312,7 +312,7 @@ class IterForDMatrixTest(xgb.core.DataIter):
             self._data = []
             self._labels = []
             for i in range(self.BATCHES):
-                X, y = tm.make_categorical(self.ROWS_PER_BATCH, 4, 13, False)
+                X, y = tm.make_categorical(self.ROWS_PER_BATCH, 4, 13, onehot=False)
                 self._data.append(cudf.from_pandas(X))
                 self._labels.append(y)
         else:
@@ -382,3 +382,20 @@ def test_from_cudf_iter(enable_categorical):
     predict = reg.predict(m)
     predict_with_it = reg_with_it.predict(m_it)
     np.testing.assert_allclose(predict_with_it, predict)
+
+
+def test_invalid_meta() -> None:
+    df = cudf.DataFrame({"f0": [0, 1, 2], "f1": [2, 3, 4], "y": [None, 1, 2]})
+    y = df["y"]
+    X = df.drop(["y"], axis=1)
+    with pytest.raises(ValueError, match="Missing value"):
+        xgb.DMatrix(X, y)
+    with pytest.raises(ValueError, match="Missing value"):
+        xgb.QuantileDMatrix(X, y)
+    y = X.copy()
+    y.iloc[0, 0] = None
+    # check by the cuDF->cupy converter.
+    with pytest.raises(ValueError, match="no nulls"):
+        xgb.DMatrix(X, y)
+    with pytest.raises(ValueError, match="no nulls"):
+        xgb.QuantileDMatrix(X, y)

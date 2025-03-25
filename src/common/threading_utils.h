@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2023 by XGBoost Contributors
+ * Copyright 2019-2025, XGBoost Contributors
  */
 #ifndef XGBOOST_COMMON_THREADING_UTILS_H_
 #define XGBOOST_COMMON_THREADING_UTILS_H_
@@ -11,12 +11,14 @@
 #include <cstddef>      // for size_t
 #include <cstdint>      // for int32_t
 #include <cstdlib>      // for malloc, free
-#include <functional>   // for function
 #include <new>          // for bad_alloc
+#include <thread>       // for thread
 #include <type_traits>  // for is_signed, conditional_t, is_integral_v, invoke_result_t
+#include <utility>      // for forward
 #include <vector>       // for vector
 
 #include "xgboost/logging.h"
+#include "xgboost/string_view.h"  // for StringView
 
 #if !defined(_OPENMP)
 extern "C" {
@@ -180,7 +182,15 @@ struct Sched {
 };
 
 template <typename Index, typename Func>
-void ParallelFor(Index size, int32_t n_threads, Sched sched, Func fn) {
+void ParallelFor(Index size, std::int32_t n_threads, Sched sched, Func&& fn) {
+  if (n_threads == 1) {
+    // early exit
+    for (Index i = 0; i < size; ++i) {
+      fn(i);
+    }
+    return;
+  }
+
 #if defined(_MSC_VER)
   // msvc doesn't support unsigned integer as openmp index.
   using OmpInd = std::conditional_t<std::is_signed<Index>::value, Index, omp_ulong>;
@@ -239,8 +249,8 @@ void ParallelFor(Index size, int32_t n_threads, Sched sched, Func fn) {
 }
 
 template <typename Index, typename Func>
-void ParallelFor(Index size, int32_t n_threads, Func fn) {
-  ParallelFor(size, n_threads, Sched::Static(), fn);
+void ParallelFor(Index size, std::int32_t n_threads, Func&& fn) {
+  ParallelFor(size, n_threads, Sched::Static(), std::forward<Func>(fn));
 }
 
 inline std::int32_t OmpGetThreadLimit() {
@@ -305,9 +315,20 @@ class MemStackAllocator {
 };
 
 /**
- * \brief Constant that can be used for initializing static thread local memory.
+ * @brief Constant that can be used for initializing static thread local memory.
  */
 std::int32_t constexpr DefaultMaxThreads() { return 128; }
+
+/**
+ * @brief Get numa node on Linux. Other platforms are not supported. Returns false if the
+ *        call fails.
+ */
+[[nodiscard]] bool GetCpuNuma(unsigned int* cpu, unsigned int* numa);
+
+/**
+ * @brief Give the thread a name. Supports only pthread on linux.
+ */
+void NameThread(std::thread* t, StringView name);
 }  // namespace xgboost::common
 
 #endif  // XGBOOST_COMMON_THREADING_UTILS_H_

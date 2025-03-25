@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, NVIDIA CORPORATION.
+ * Copyright (c) 2022-2024, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -114,16 +114,16 @@ struct PathElement {
   }
 
   /*! Unique path index. */
-  size_t path_idx;
+  size_t path_idx{};
   /*! Feature of this split, -1 indicates bias term. */
-  int64_t feature_idx;
+  int64_t feature_idx{};
   /*! Indicates class for multiclass problems. */
-  int group;
-  SplitConditionT split_condition;
+  int group{};
+  SplitConditionT split_condition{};
   /*! Probability of following this path when feature_idx is not in the active
    * set. */
-  double zero_fraction;
-  float v;  // Leaf weight at the end of the path
+  double zero_fraction{};
+  float v{};  // Leaf weight at the end of the path
 };
 
 // Helper function that accepts an index into a flat contiguous array and the
@@ -459,15 +459,13 @@ __global__ void __launch_bounds__(GPUTREESHAP_MAX_THREADS_PER_BLOCK)
                const PathElement<SplitConditionT>* path_elements,
                const size_t* bin_segments, size_t num_groups, double* phis) {
   // Use shared memory for structs, otherwise nvcc puts in local memory
-  __shared__ DatasetT s_X;
-  s_X = X;
   __shared__ PathElement<SplitConditionT> s_elements[kBlockSize];
   PathElement<SplitConditionT>& e = s_elements[threadIdx.x];
 
   size_t start_row, end_row;
   bool thread_active;
   ConfigureThread<DatasetT, kBlockSize, kRowsPerWarp>(
-      s_X, bins_per_row, path_elements, bin_segments, &start_row, &end_row, &e,
+      X, bins_per_row, path_elements, bin_segments, &start_row, &end_row, &e,
       &thread_active);
   uint32_t mask = __ballot_sync(FULL_MASK, thread_active);
   if (!thread_active) return;
@@ -564,15 +562,13 @@ __global__ void __launch_bounds__(GPUTREESHAP_MAX_THREADS_PER_BLOCK)
                            const size_t* bin_segments, size_t num_groups,
                            double* phis_interactions) {
   // Use shared memory for structs, otherwise nvcc puts in local memory
-  __shared__ DatasetT s_X;
-  s_X = X;
   __shared__ PathElement<SplitConditionT> s_elements[kBlockSize];
   PathElement<SplitConditionT>* e = &s_elements[threadIdx.x];
 
   size_t start_row, end_row;
   bool thread_active;
   ConfigureThread<DatasetT, kBlockSize, kRowsPerWarp>(
-      s_X, bins_per_row, path_elements, bin_segments, &start_row, &end_row, e,
+      X, bins_per_row, path_elements, bin_segments, &start_row, &end_row, e,
       &thread_active);
   uint32_t mask = __ballot_sync(FULL_MASK, thread_active);
   if (!thread_active) return;
@@ -1234,15 +1230,15 @@ void ComputeBias(const PathVectorT& device_paths, DoubleVectorT* bias) {
  * ensemble size.
  *
  * \exception std::invalid_argument Thrown when an invalid argument error
- * condition occurs. 
+ * condition occurs.
  * \tparam  PathIteratorT     Thrust type iterator, may be
  * thrust::device_ptr for device memory, or stl iterator/raw pointer for host
- * memory. 
+ * memory.
  * \tparam  PhiIteratorT      Thrust type iterator, may be
  * thrust::device_ptr for device memory, or stl iterator/raw pointer for host
- * memory. Value type must be floating point. 
+ * memory. Value type must be floating point.
  * \tparam  DatasetT User-specified
- * dataset container. 
+ * dataset container.
  * \tparam  DeviceAllocatorT  Optional thrust style
  * allocator.
  *
@@ -1256,13 +1252,13 @@ void ComputeBias(const PathVectorT& device_paths, DoubleVectorT* bias) {
  * root with feature_idx = -1 and zero_fraction = 1.0. The ordering of path
  * elements inside a unique path does not matter - the result will be the same.
  * Paths may contain duplicate features. See the PathElement class for more
- * information. 
- * \param end         Path end iterator. 
+ * information.
+ * \param end         Path end iterator.
  * \param num_groups  Number
  * of output groups. In multiclass classification the algorithm outputs feature
- * contributions per output class. 
+ * contributions per output class.
  * \param phis_begin  Begin iterator for output
- * phis. 
+ * phis.
  * \param phis_end    End iterator for output phis.
  */
 template <typename DeviceAllocatorT = thrust::device_allocator<int>,
