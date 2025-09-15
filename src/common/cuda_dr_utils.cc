@@ -1,5 +1,5 @@
 /**
- * Copyright 2024, XGBoost contributors
+ * Copyright 2024-2025, XGBoost contributors
  */
 #if defined(XGBOOST_USE_CUDA)
 #include "cuda_dr_utils.h"
@@ -10,19 +10,26 @@
 #include <memory>     // for make_unique
 #include <mutex>      // for call_once
 #include <sstream>    // for stringstream
-#include <string>     // for string
+#include <string>     // for string, stoi
 
-#include "common.h"               // for safe_cuda
+#include "common.h"               // for safe_cuda, TrimFirst, Split
 #include "cuda_rt_utils.h"        // for CurrentDevice
-#include "xgboost/string_view.h"  // for StringVie
+#include "io.h"                   // for CmdOutput
+#include "xgboost/string_view.h"  // for StringView
 
 namespace xgboost::cudr {
 CuDriverApi::CuDriverApi() {
   // similar to dlopen, but without the need to release a handle.
   auto safe_load = [](xgboost::StringView name, auto **fnptr) {
     cudaDriverEntryPointQueryResult status;
+#if (CUDA_VERSION / 1000) >= 13
+    dh::safe_cuda(cudaGetDriverEntryPointByVersion(name.c_str(), reinterpret_cast<void **>(fnptr),
+                                                   12080, cudaEnablePerThreadDefaultStream,
+                                                   &status));
+#else
     dh::safe_cuda(cudaGetDriverEntryPoint(name.c_str(), reinterpret_cast<void **>(fnptr),
                                           cudaEnablePerThreadDefaultStream, &status));
+#endif  // (CUDA_VERSION / 1000) >= 13
     CHECK(status == cudaDriverEntryPointSuccess) << name;
     CHECK(*fnptr);
   };
@@ -103,6 +110,54 @@ void MakeCuMemLocation(CUmemLocationType type, CUmemLocation *loc) {
   prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
   MakeCuMemLocation(type, &prop.location);
   return prop;
+}
+
+[[nodiscard]] bool GetVersionFromSmi(std::int32_t *p_major, std::int32_t *p_minor) {
+  using ::xgboost::common::Split;
+  using ::xgboost::common::TrimFirst;
+  // `nvidia-smi --version` is not available for older versions, as a result, we can't query the
+  // cuda driver version unless we want to parse the table output.
+
+  // Example output on a 2-GPU system:
+  //
+  // $ nvidia-smi --query-gpu=driver_version --format=csv
+  //
+  // driver_version
+  // 570.124.06
+  // 570.124.06
+  //
+  auto cmd = "nvidia-smi --query-gpu=driver_version --format=csv";
+  auto smi_out_str = common::CmdOutput(StringView{cmd});
+
+  auto Invalid = [=] {
+    *p_major = *p_minor = -1;
+    return false;
+  };
+  if (smi_out_str.empty()) {
+    return Invalid();
+  }
+
+  auto smi_split = Split(smi_out_str, '\n');
+  if (smi_split.size() < 2) {
+    return Invalid();
+  }
+
+  // Use the first GPU
+  auto smi_ver = Split(TrimFirst(smi_split[1]), '.');
+  // 570.124.06
+  // On WSL2, you can have driver version with two components, e.g. 573.24
+  if (smi_ver.size() != 2 && smi_ver.size() != 3) {
+    return Invalid();
+  }
+  try {
+    *p_major = std::stoi(smi_ver[0]);
+    *p_minor = std::stoi(smi_ver[1]);
+    LOG(INFO) << "Driver version: `" << *p_major << "." << *p_minor << "`";
+    return true;
+  } catch (std::exception const &) {
+  }
+
+  return Invalid();
 }
 }  // namespace xgboost::cudr
 #endif

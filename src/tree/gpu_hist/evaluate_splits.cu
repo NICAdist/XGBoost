@@ -110,12 +110,16 @@ class EvaluateSplitAgent {
     return gpair;
   }
 
-  __device__ __forceinline__ void Numerical(DeviceSplitCandidate *__restrict__ best_split) {
+  __device__ __forceinline__ void Numerical(DeviceSplitCandidate *best_split) {
     for (int scan_begin = gidx_begin; scan_begin < gidx_end; scan_begin += kBlockSize) {
       bool thread_active = (scan_begin + threadIdx.x) < gidx_end;
       GradientPairInt64 bin = thread_active ? LoadGpair(node_histogram + scan_begin + threadIdx.x)
-                                              : GradientPairInt64();
-      BlockScanT(temp_storage->scan).ExclusiveScan(bin, bin, cub::Sum(), prefix_op);
+                                            : GradientPairInt64();
+#if CUB_VERSION >= 300000
+      BlockScanT(temp_storage->scan).ExclusiveScan(bin, bin, cuda::std::plus{}, prefix_op);
+#else
+      BlockScanT(temp_storage->scan).ExclusiveScan(bin, bin, cub::Sum{}, prefix_op);
+#endif
       // Whether the gradient of missing values is put to the left side.
       bool missing_left = true;
       float gain = thread_active ? LossChangeMissing(bin, missing, parent_sum, param, nidx, fidx,
@@ -138,10 +142,12 @@ class EvaluateSplitAgent {
         best_split->Update(gain, missing_left ? kLeftDir : kRightDir, fvalue, fidx, left, right,
                            false, param, rounding);
       }
+
+      __syncwarp();
     }
   }
 
-  __device__ __forceinline__ void OneHot(DeviceSplitCandidate *__restrict__ best_split) {
+  __device__ __forceinline__ void OneHot(DeviceSplitCandidate *best_split) {
     for (int scan_begin = gidx_begin; scan_begin < gidx_end; scan_begin += kBlockSize) {
       bool thread_active = (scan_begin + threadIdx.x) < gidx_end;
 
@@ -168,6 +174,8 @@ class EvaluateSplitAgent {
         best_split->UpdateCat(gain, missing_left ? kLeftDir : kRightDir,
                               static_cast<bst_cat_t>(fvalue), fidx, left, right, param, rounding);
       }
+
+      __syncwarp();
     }
   }
   /**
@@ -177,7 +185,7 @@ class EvaluateSplitAgent {
                                                   bool missing_left, bst_bin_t it,
                                                   GradientPairInt64 const &left_sum,
                                                   GradientPairInt64 const &right_sum,
-                                                  DeviceSplitCandidate *__restrict__ best_split) {
+                                                  DeviceSplitCandidate *best_split) {
     auto gain = thread_active
                     ? evaluator.CalcSplitGain(param, nidx, fidx, rounding.ToFloatingPoint(left_sum),
                                               rounding.ToFloatingPoint(right_sum))
@@ -196,11 +204,13 @@ class EvaluateSplitAgent {
       best_split->UpdateCat(gain, missing_left ? kLeftDir : kRightDir, best_thresh, fidx, left_sum,
                             right_sum, param, rounding);
     }
+
+    __syncwarp();
   }
   /**
    * \brief Partition-based split for categorical feature.
    */
-  __device__ __forceinline__ void Partition(DeviceSplitCandidate *__restrict__ best_split,
+  __device__ __forceinline__ void Partition(DeviceSplitCandidate *best_split,
                                             common::Span<bst_feature_t> sorted_idx,
                                             std::size_t node_offset,
                                             GPUTrainingParam const &param) {
@@ -292,7 +302,11 @@ __global__ __launch_bounds__(kBlockSize) void EvaluateSplitsKernel(
     agent.Numerical(&best_split);
   }
 
+#if CUB_VERSION >= 300000
+  __syncthreads();
+#else
   cub::CTA_SYNC();
+#endif
   if (threadIdx.x == 0) {
     // Record best loss for each feature
     out_candidates[blockIdx.x] = best_split;

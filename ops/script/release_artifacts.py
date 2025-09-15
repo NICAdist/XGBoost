@@ -111,7 +111,7 @@ def make_python_sdist(
 
     # Build sdist for `xgboost-cpu`.
     with DirectoryExcursion(ROOT):
-        make_pyproject("cpu")
+        make_pyproject(use_cpu_suffix=1, require_nccl_dep=0)
     with DirectoryExcursion(ROOT / "python-package"):
         subprocess.run(["python", "-m", "build", "--sdist"], check=True)
         sdist_name = (
@@ -126,7 +126,7 @@ def make_python_sdist(
 
     # Build sdist for `xgboost`.
     with DirectoryExcursion(ROOT):
-        make_pyproject("default")
+        make_pyproject(use_cpu_suffix=0, require_nccl_dep=1)
 
     with DirectoryExcursion(ROOT / "python-package"):
         subprocess.run(["python", "-m", "build", "--sdist"], check=True)
@@ -154,6 +154,7 @@ def download_python_wheels(branch: str, commit_hash: str, outdir: Path) -> None:
     ]
     minimal_platforms = [
         "win_amd64",
+        "win_arm64",
         "manylinux2014_x86_64",
         "manylinux2014_aarch64",
     ]
