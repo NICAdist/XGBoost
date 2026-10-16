@@ -11,6 +11,8 @@ scipy
 myst-parser
 ray[train]
 sphinx-gallery
+sphinx-issues
+sphinx-tabs
 dask
 pyspark
 cloudpickle

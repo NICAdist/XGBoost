@@ -5,12 +5,15 @@
  *  performs predictions for a gradient booster.
  */
 #pragma once
-#include <xgboost/base.h>
+#include <dmlc/registry.h>    // for FunctionRegEntryBase
+#include <xgboost/base.h>     // for bst_tree_t
 #include <xgboost/cache.h>    // for DMatrixCache
 #include <xgboost/context.h>  // for Context
 #include <xgboost/context.h>
 #include <xgboost/data.h>
 #include <xgboost/host_device_vector.h>
+#include <xgboost/linalg.h>
+#include <xgboost/span.h>
 
 #include <functional>  // for function
 #include <memory>      // for shared_ptr
@@ -23,6 +26,7 @@ struct GBTreeModel;
 }  // namespace xgboost::gbm
 
 namespace xgboost {
+class RegTree;
 /**
  * \brief Contains pointer to input matrix and associated cached predictions.
  */
@@ -103,10 +107,12 @@ class Predictor {
    * \param           model       The model to predict from.
    * \param           tree_begin  The tree begin index.
    * \param           tree_end    The tree end index.
+   * \param           tree_weights_override Optional weights for temporary prediction overrides.
    */
   virtual void PredictBatch(DMatrix* dmat, PredictionCacheEntry* out_preds,
                             gbm::GBTreeModel const& model, bst_tree_t tree_begin,
-                            bst_tree_t tree_end = 0) const = 0;
+                            bst_tree_t tree_end = 0,
+                            std::vector<float> const* tree_weights_override = nullptr) const = 0;
 
   /**
    * \brief Inplace prediction.
@@ -139,6 +145,18 @@ class Predictor {
                            gbm::GBTreeModel const& model, bst_tree_t tree_end = 0) const = 0;
 
   /**
+   * \brief Add prediction contributions from known leaf ids. The leaf ids are encoded with
+   *        tree::SamplePosition, where invalid rows are still decoded for prediction.
+   *
+   * \param leaf_ids Leaf ids for each tree, one vector per tree.
+   * \param trees Trees corresponding to the leaf id vectors.
+   * \param out_preds Prediction output to be incremented.
+   */
+  virtual void PredictFromLeafIds(common::Span<HostDeviceVector<bst_node_t> const> leaf_ids,
+                                  common::Span<RegTree const*> trees,
+                                  linalg::MatrixView<float> out_preds) const = 0;
+
+  /**
    * \brief feature contributions to individual predictions; the output will be
    * a vector of length (nfeats + 1) * num_output_group * nsample, arranged in
    * that order.
@@ -147,7 +165,6 @@ class Predictor {
    * \param [in,out]  out_contribs       The output feature contribs.
    * \param           model              Model to make predictions from.
    * \param           tree_end           The tree end index.
-   * \param           tree_weights       (Optional) Weights to multiply each tree by.
    * \param           approximate        Use fast approximate algorithm.
    * \param           condition          Condition on the condition_feature (0=no, -1=cond off, 1=cond on).
    * \param           condition_feature  Feature to condition on (i.e. fix) during calculations.
@@ -155,14 +172,12 @@ class Predictor {
 
   virtual void PredictContribution(DMatrix* dmat, HostDeviceVector<float>* out_contribs,
                                    gbm::GBTreeModel const& model, bst_tree_t tree_end = 0,
-                                   std::vector<float> const* tree_weights = nullptr,
                                    bool approximate = false, int condition = 0,
                                    unsigned condition_feature = 0) const = 0;
 
   virtual void PredictInteractionContributions(DMatrix* dmat, HostDeviceVector<float>* out_contribs,
                                                gbm::GBTreeModel const& model,
                                                bst_tree_t tree_end = 0,
-                                               std::vector<float> const* tree_weights = nullptr,
                                                bool approximate = false) const = 0;
 
   /**
@@ -180,8 +195,7 @@ class Predictor {
 struct PredictorReg
     : public dmlc::FunctionRegEntryBase<PredictorReg, std::function<Predictor*(Context const*)>> {};
 
-#define XGBOOST_REGISTER_PREDICTOR(UniqueId, Name)      \
-  static DMLC_ATTRIBUTE_UNUSED ::xgboost::PredictorReg& \
-      __make_##PredictorReg##_##UniqueId##__ =          \
-          ::dmlc::Registry<::xgboost::PredictorReg>::Get()->__REGISTER__(Name)
+#define XGBOOST_REGISTER_PREDICTOR(UniqueId, Name)                                               \
+  static DMLC_ATTRIBUTE_UNUSED ::xgboost::PredictorReg& __make_##PredictorReg##_##UniqueId##__ = \
+      ::dmlc::Registry<::xgboost::PredictorReg>::Get()->__REGISTER__(Name)
 }  // namespace xgboost

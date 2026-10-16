@@ -3,8 +3,7 @@ change without notice.
 
 """
 
-# pylint: disable=invalid-name,missing-function-docstring
-import gc
+# pylint: disable=missing-function-docstring
 import importlib.util
 import os
 import platform
@@ -22,7 +21,6 @@ from typing import (
     Generator,
     List,
     Optional,
-    Sequence,
     Set,
     Tuple,
     TypedDict,
@@ -37,10 +35,10 @@ from scipy import sparse
 import xgboost as xgb
 from xgboost import RabitTracker
 from xgboost.core import ArrayLike
-from xgboost.sklearn import SklObjective
 
 from .._typing import PathLike
 from .data import (
+    IteratorForTest,
     get_california_housing,
     get_cancer,
     get_digits,
@@ -49,6 +47,9 @@ from .data import (
     make_categorical,
     make_sparse_regression,
 )
+
+# Used to be defined in this top level module.
+from .utils import non_decreasing, non_increasing  # NOLINT
 
 hypothesis = pytest.importorskip("hypothesis")
 
@@ -69,9 +70,10 @@ def has_ipv6() -> bool:
 
     if socket.has_ipv6:
         try:
-            with socket.socket(
-                socket.AF_INET6, socket.SOCK_STREAM
-            ) as server, socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as client:
+            with (
+                socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as server,
+                socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as client,
+            ):
                 server.bind(("::1", 0))
                 port = server.getsockname()[1]
                 server.listen()
@@ -190,10 +192,6 @@ def no_dask_cudf() -> PytestSkip:
     return no_mod("dask_cudf")
 
 
-def no_json_schema() -> PytestSkip:
-    return no_mod("jsonschema")
-
-
 def no_graphviz() -> PytestSkip:
     return no_mod("graphviz")
 
@@ -215,65 +213,6 @@ def no_multiple(*args: Any) -> PytestSkip:
 
 def skip_win() -> PytestSkip:
     return {"reason": "Unsupported platform.", "condition": is_windows()}
-
-
-class IteratorForTest(xgb.core.DataIter):
-    """Iterator for testing streaming DMatrix. (external memory, quantile)"""
-
-    def __init__(  # pylint: disable=too-many-arguments
-        self,
-        X: Sequence,
-        y: Sequence,
-        w: Optional[Sequence],
-        *,
-        cache: Optional[str],
-        on_host: bool = False,
-        min_cache_page_bytes: Optional[int] = None,
-    ) -> None:
-        assert len(X) == len(y)
-        self.X = X
-        self.y = y
-        self.w = w
-        self.it = 0
-        super().__init__(
-            cache_prefix=cache,
-            on_host=on_host,
-            min_cache_page_bytes=min_cache_page_bytes,
-        )
-
-    def next(self, input_data: Callable) -> bool:
-        if self.it == len(self.X):
-            return False
-
-        with pytest.raises(TypeError, match="Keyword argument"):
-            input_data(self.X[self.it], self.y[self.it], None)
-
-        # Use copy to make sure the iterator doesn't hold a reference to the data.
-        input_data(
-            data=self.X[self.it].copy(),
-            label=self.y[self.it].copy(),
-            weight=self.w[self.it].copy() if self.w else None,
-        )
-        gc.collect()  # clear up the copy, see if XGBoost access freed memory.
-        self.it += 1
-        return True
-
-    def reset(self) -> None:
-        self.it = 0
-
-    def as_arrays(
-        self,
-    ) -> Tuple[Union[np.ndarray, sparse.csr_matrix], ArrayLike, Optional[ArrayLike]]:
-        if isinstance(self.X[0], sparse.csr_matrix):
-            X = sparse.vstack(self.X, format="csr")
-        else:
-            X = np.concatenate(self.X, axis=0)
-        y = np.concatenate(self.y, axis=0)
-        if self.w:
-            w = np.concatenate(self.w, axis=0)
-        else:
-            w = None
-        return X, y, w
 
 
 def make_regression(
@@ -378,29 +317,6 @@ class TestDataset:
 
     def __repr__(self) -> str:
         return self.name
-
-
-def make_ltr(
-    n_samples: int,
-    n_features: int,
-    n_query_groups: int,
-    max_rel: int,
-    sort_qid: bool = True,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Make a dataset for testing LTR."""
-    rng = np.random.default_rng(1994)
-    X = rng.normal(0, 1.0, size=n_samples * n_features).reshape(n_samples, n_features)
-    y = np.sum(X, axis=1)
-    y -= y.min()
-    y = np.round(y / y.max() * max_rel).astype(np.int32)
-
-    qid = rng.integers(0, n_query_groups, size=n_samples, dtype=np.int32)
-    w = rng.normal(0, 1.0, size=n_query_groups)
-    w -= np.min(w)
-    w /= np.max(w)
-    if sort_qid:
-        qid = np.sort(qid)
-    return X, y, qid, w
 
 
 def _cat_sampled_from() -> strategies.SearchStrategy:
@@ -562,27 +478,6 @@ multi_dataset_strategy = make_datasets_with_margin(
 )()
 
 
-def non_increasing(L: Sequence[float], tolerance: float = 1e-4) -> bool:
-    return all((y - x) < tolerance for x, y in zip(L, L[1:]))
-
-
-def non_decreasing(L: Sequence[float], tolerance: float = 1e-4) -> bool:
-    return all((y - x) >= -tolerance for x, y in zip(L, L[1:]))
-
-
-def predictor_equal(lhs: xgb.DMatrix, rhs: xgb.DMatrix) -> bool:
-    """Assert whether two DMatrices contain the same predictors."""
-    lcsr = lhs.get_data()
-    rcsr = rhs.get_data()
-    return all(
-        (
-            np.array_equal(lcsr.data, rcsr.data),
-            np.array_equal(lcsr.indices, rcsr.indices),
-            np.array_equal(lcsr.indptr, rcsr.indptr),
-        )
-    )
-
-
 M = TypeVar("M", xgb.Booster, xgb.XGBModel)
 
 
@@ -649,7 +544,7 @@ def softmax(x: np.ndarray) -> np.ndarray:
 
 def softprob_obj(
     classes: int, use_cupy: bool = False, order: str = "C", gdtype: str = "float32"
-) -> SklObjective:
+) -> Callable[[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]:
     """Custom softprob objective for testing.
 
     Parameters
@@ -697,7 +592,7 @@ def ls_obj(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Least squared error."""
     grad = y_pred - y_true
-    hess = np.ones(len(y_true))
+    hess = np.ones(grad.shape)
     if sample_weight is not None:
         grad *= sample_weight
         hess *= sample_weight
@@ -851,15 +746,6 @@ def run_with_rabit(
         assert exception_queue.empty(), f"Worker failed: {exception_queue.get()}"
 
     tracker.wait_for()
-
-
-def column_split_feature_names(
-    feature_names: List[Union[str, int]], world_size: int
-) -> List[str]:
-    """Get the global list of feature names from the local feature names."""
-    return [
-        f"{rank}.{feature}" for rank in range(world_size) for feature in feature_names
-    ]
 
 
 def is_windows() -> bool:

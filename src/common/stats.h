@@ -9,14 +9,11 @@
 #include <vector>
 
 #include "algorithm.h"        // for StableSort
+#include "common.h"           // AssertGPUSupport,AssertSYCLSupport
 #include "optional_weight.h"  // OptionalWeights
 #include "xgboost/context.h"  // Context
 #include "xgboost/linalg.h"   // TensorView,VectorView
 #include "xgboost/logging.h"  // CHECK_GE
-
-#if !defined(XGBOOST_USE_CUDA)
-#include "common.h"  // AssertGPUSupport
-#endif
 
 namespace xgboost {
 namespace common {
@@ -111,12 +108,11 @@ void Median(Context const* ctx, linalg::TensorView<float const, 2> t, OptionalWe
 
 void Mean(Context const* ctx, linalg::VectorView<float const> v, linalg::VectorView<float> out);
 
-void SampleMean(Context const* ctx, bool is_column_split, linalg::MatrixView<float const> d_v,
+void SampleMean(Context const* ctx, linalg::MatrixView<float const> d_v,
                 linalg::VectorView<float> d_out);
 
-void WeightedSampleMean(Context const* ctx, bool is_column_split,
-                        linalg::MatrixView<float const> d_v, common::Span<float const> d_w,
-                        linalg::VectorView<float> d_out);
+void WeightedSampleMean(Context const* ctx, linalg::MatrixView<float const> d_v,
+                        common::Span<float const> d_w, linalg::VectorView<float> d_out);
 
 #if !defined(XGBOOST_USE_CUDA)
 inline void Median(Context const*, linalg::TensorView<float const, 2>, OptionalWeights,
@@ -127,18 +123,28 @@ inline void Mean(Context const*, linalg::VectorView<float const>, linalg::Vector
   common::AssertGPUSupport();
 }
 
-inline void SampleMean(Context const*, bool, linalg::MatrixView<float const>,
-                       linalg::VectorView<float>) {
+inline void SampleMean(Context const*, linalg::MatrixView<float const>, linalg::VectorView<float>) {
   common::AssertGPUSupport();
 }
 
-inline void WeightedSampleMean(Context const*, bool, linalg::MatrixView<float const>,
+inline void WeightedSampleMean(Context const*, linalg::MatrixView<float const>,
                                common::Span<float const>, linalg::VectorView<float>) {
   common::AssertGPUSupport();
 }
 
 #endif  // !defined(XGBOOST_USE_CUDA)
 }  // namespace cuda_impl
+
+namespace sycl_impl {
+void Mean(Context const* ctx, linalg::VectorView<float const> v, linalg::VectorView<float> out);
+
+#if !defined(XGBOOST_USE_SYCL)
+inline void Mean(Context const*, linalg::VectorView<float const>, linalg::VectorView<float>) {
+  common::AssertSYCLSupport();
+}
+
+#endif  // !defined(XGBOOST_USE_SYCL)
+}  // namespace sycl_impl
 
 /**
  * @brief Calculate medians for each column of the input matrix.
@@ -149,19 +155,18 @@ void Median(Context const* ctx, linalg::Matrix<float> const& t,
 /**
  * @brief Calculate the mean value of a vector.
  */
-void Mean(Context const* ctx, linalg::Vector<float> const& v, linalg::Vector<float>* out);
+void Mean(Context const* ctx, linalg::VectorView<float const> v, linalg::Vector<float>* out);
 
 /**
  * @brief Calculate the mean value for the first axis.
  */
-void SampleMean(Context const* ctx, bool is_column_split, linalg::Matrix<float> const& v,
-                linalg::Vector<float>* out);
+void SampleMean(Context const* ctx, linalg::Matrix<float> const& v, linalg::Vector<float>* out);
 
 /**
  * @brief Calculate the weighted mean value for the first axis, weights are assumed to be
  *        equal to or greater than zero.
  */
-void WeightedSampleMean(Context const* ctx, bool is_column_split, linalg::Matrix<float> const& v,
+void WeightedSampleMean(Context const* ctx, linalg::Matrix<float> const& v,
                         HostDeviceVector<float> const& w, linalg::Vector<float>* out);
 }  // namespace common
 }  // namespace xgboost

@@ -6,7 +6,7 @@
 
     <groupId>ml.dmlc</groupId>
     <artifactId>xgboost-jvm_2.12</artifactId>
-    <version>3.0.5</version>
+    <version>3.4.1</version>
     <packaging>pom</packaging>
     <name>XGBoost JVM Package</name>
     <description>JVM Package for XGBoost</description>
@@ -60,9 +60,9 @@
         <use.debug>OFF</use.debug>
         <use.nvtx>OFF</use.nvtx>
         <plugin.rmm>OFF</plugin.rmm>
-        <cudf.version>24.10.0</cudf.version>
-        <spark.rapids.version>24.10.0</spark.rapids.version>
-        <spark.rapids.classifier>cuda12</spark.rapids.classifier>
+        <cudf.version>26.04.0</cudf.version>
+        <spark.rapids.version>26.04.2</spark.rapids.version>
+        <spark.rapids.classifier>cuda13</spark.rapids.classifier>
         <scalatest.version>3.2.19</scalatest.version>
         <scala-collection-compat.version>2.12.0</scala-collection-compat.version>
         <skip.native.build>false</skip.native.build>
@@ -199,7 +199,7 @@
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
-                        <version>0.7.0</version>
+                        <version>0.11.0</version>
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>central</publishingServerId>
@@ -287,29 +287,6 @@
 
         <plugins>
             <plugin>
-                <groupId>org.scalastyle</groupId>
-                <artifactId>scalastyle-maven-plugin</artifactId>
-                <version>1.0.0</version>
-                <configuration>
-                    <verbose>false</verbose>
-                    <failOnViolation>true</failOnViolation>
-                    <includeTestSourceDirectory>true</includeTestSourceDirectory>
-                    <sourceDirectory>${basedir}/src/main/scala</sourceDirectory>
-                    <testSourceDirectory>${basedir}/src/test/scala</testSourceDirectory>
-                    <configLocation>scalastyle-config.xml</configLocation>
-                    <outputEncoding>UTF-8</outputEncoding>
-                </configuration>
-                <executions>
-                    <execution>
-                        <id>checkstyle</id>
-                        <phase>validate</phase>
-                        <goals>
-                            <goal>check</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-site-plugin</artifactId>
                 <version>3.21.0</version>
@@ -320,6 +297,8 @@
                 <version>3.6.0</version>
                 <configuration>
                     <configLocation>checkstyle.xml</configLocation>
+                    <suppressionsLocation>checkstyle-suppressions.xml</suppressionsLocation>
+                    <suppressionsFileExpression>checkstyle.suppressions.file</suppressionsFileExpression>
                     <failOnViolation>true</failOnViolation>
                 </configuration>
                 <executions>

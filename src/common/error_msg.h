@@ -1,14 +1,15 @@
 /**
- * Copyright 2023-2024, XGBoost contributors
+ * Copyright 2023-2026, XGBoost contributors
  *
  * \brief Common error message for various checks.
  */
 #ifndef XGBOOST_COMMON_ERROR_MSG_H_
 #define XGBOOST_COMMON_ERROR_MSG_H_
 
-#include <cstdint>    // for uint64_t
-#include <limits>     // for numeric_limits
-#include <string>     // for string
+#include <cstdint>       // for uint64_t
+#include <limits>        // for numeric_limits
+#include <string>        // for string
+#include <system_error>  // for error_code
 
 #include "xgboost/base.h"     // for bst_feature_t
 #include "xgboost/context.h"  // for Context
@@ -83,11 +84,11 @@ inline void WarnOldSerialization() {
   logged = true;
 }
 
-void WarnDeprecatedGPUHist();
+[[nodiscard]] std::string InvalidModel(StringView fname);
+
+[[nodiscard]] std::string OldBinaryModel(StringView fname);
 
 void WarnManualUpdater();
-
-void WarnDeprecatedGPUId();
 
 void WarnEmptyDataset();
 
@@ -106,15 +107,12 @@ inline auto NoCategorical(std::string name) {
   return name + " doesn't support categorical features.";
 }
 
-inline void NoPageConcat(bool concat_pages) {
-  if (concat_pages) {
-    LOG(FATAL) << "`extmem_single_page` must be false when there's no sampling or when it's "
-                  "running on the CPU.";
-  }
-}
-
 constexpr StringView InconsistentFeatureTypes() {
   return "Inconsistent feature types between batches.";
+}
+
+constexpr StringView InconsistentCategories() {
+  return "Inconsistent number of categories between batches.";
 }
 
 void CheckOldNccl(std::int32_t major, std::int32_t minor, std::int32_t patch);
@@ -124,5 +122,25 @@ constexpr StringView ZeroCudaMemory() {
          "support. If you are using other types of memory pool, please consider reserving a "
          "portion of the GPU memory for XGBoost.";
 }
+
+// float64 is not supported by JSON yet. Also, floating point as categories is tricky
+// since floating point equality test is inaccurate for most hardware.
+constexpr StringView NoFloatCat() {
+  return "Category index from DataFrame has floating point dtype, consider using strings or "
+         "integers instead.";
+}
+
+constexpr StringView CacheHostRatioNotImpl() {
+  return "`cache_host_ratio` is only used by the GPU `ExtMemQuantileDMatrix`.";
+}
+constexpr StringView CacheHostRatioInvalid() {
+  return "`cache_host_ratio` must be in range [0, 1].";
+}
+
+[[nodiscard]] std::error_code SystemError();
+
+void InvalidIntercept(std::int32_t n_classes, bst_target_t n_targets, std::size_t intercept_len);
+
+inline void Unreachable() { LOG(FATAL) << "Unreachable"; }
 }  // namespace xgboost::error
 #endif  // XGBOOST_COMMON_ERROR_MSG_H_

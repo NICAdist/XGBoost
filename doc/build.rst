@@ -139,23 +139,6 @@ architectures can be found `in this page <https://developer.nvidia.com/cuda-gpus
   building XGBoost with NCCL as a shared library, while ``USE_DLOPEN_NCCL`` enables
   XGBoost to load NCCL at runtime using ``dlopen``.
 
-Federated Learning
-==================
-
-The federated learning plugin requires ``grpc`` and ``protobuf``. To install grpc, refer
-to the `installation guide from the gRPC website
-<https://grpc.io/docs/languages/cpp/quickstart/>`_. Alternatively, one can use the
-``libgrpc`` and the ``protobuf`` package from conda forge if conda is available. After
-obtaining the required dependencies, enable the flag: ``-DPLUGIN_FEDERATED=ON`` when
-running CMake. Please note that only Linux is supported for the federated plugin.
-
-
-.. code-block:: bash
-
-  cmake -B build -S . -DPLUGIN_FEDERATED=ON -GNinja
-  cd build && ninja
-
-
 .. _build_python:
 
 ***********************************
@@ -190,26 +173,32 @@ There are several ways to build and install the package from source:
   .. code-block:: console
 
     $ cd python-package/
-    $ pip install -v . # Builds the shared object automatically.
+    $ pip install -v .
 
-  which will compile XGBoost's native (C++) code using default CMake flags.  To enable
-  additional compilation options, pass corresponding ``--config-settings``:
+  which will invoke CMake underneath to build the shared library
+  (``libxgboost.so`` on Linux). To customize the CMake options,
+  add the command-line argument
+  ``--config-settings cmake.define.[CMAKE_OPTION]=[OPTION_VALUE]``.
+  (Pip 22.1+ is required.)
+
+  For example:
 
   .. code-block:: console
 
-    $ pip install -v . --config-settings use_cuda=True --config-settings use_nccl=True
+    $ pip install -v . \
+        --config-settings cmake.define.USE_CUDA=ON \
+        --config-settings cmake.define.USE_NCCL=ON
 
-  Use Pip 22.1 or later to use ``--config-settings`` option.
+  Common CMake options (see :ref:`build_shared_lib` for the full list):
 
-  Here are the available options for ``--config-settings``:
-
-  .. literalinclude:: ../python-package/packager/build_config.py
-    :language: python
-    :start-at: @dataclasses.dataclass
-    :end-before: def _set_config_setting(
-
-  ``use_system_libxgboost`` is a special option. See Item 4 below for
-  detailed description.
+  - ``USE_CUDA`` — build with CUDA / GPU acceleration
+  - ``USE_NCCL`` — build with NCCL for distributed GPU training
+  - ``USE_DLOPEN_NCCL`` — load NCCL dynamically at runtime
+  - ``PLUGIN_FEDERATED`` — enable the federated learning plugin
+  - ``PLUGIN_RMM`` — build with RAPIDS Memory Manager support
+  - ``HIDE_CXX_SYMBOLS`` — hide all C++ symbols in the shared library
+  - ``USE_OPENMP`` — build with OpenMP (defaults to ON)
+  - ``XGBOOST_USE_SYSTEM_LIBXGBOOST`` — see Item 4 below
 
   .. note:: Verbose flag recommended
 
@@ -252,12 +241,12 @@ There are several ways to build and install the package from source:
     libpath = pathlib.Path(sys.base_prefix).joinpath("lib", "libxgboost.so")
     assert libpath.exists()
 
-  Then pass ``use_system_libxgboost=True`` option to ``pip install``:
+  Then pass ``cmake.define.XGBOOST_USE_SYSTEM_LIBXGBOOST=ON`` to ``pip install``:
 
   .. code-block:: bash
 
     cd python-package
-    pip install . --config-settings use_system_libxgboost=True
+    pip install . --config-settings cmake.define.XGBOOST_USE_SYSTEM_LIBXGBOOST=ON
 
 
 .. note::

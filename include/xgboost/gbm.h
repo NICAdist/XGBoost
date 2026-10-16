@@ -1,5 +1,5 @@
 /**
- * Copyright 2014-2025, XGBoost Contributors
+ * Copyright 2014-2026, XGBoost Contributors
  * \file gbm.h
  * \brief Interface of gradient booster,
  *  that learns through gradient statistics.
@@ -11,19 +11,21 @@
 #include <dmlc/registry.h>
 #include <xgboost/base.h>
 #include <xgboost/data.h>
+#include <xgboost/gradient.h>  // for GradientContainer
 #include <xgboost/host_device_vector.h>
 #include <xgboost/model.h>
 
-#include <vector>
-#include <string>
 #include <functional>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace xgboost {
 
 class Json;
 class FeatureMap;
 class ObjFunction;
+class CatContainer;
 
 struct Context;
 struct LearnerModelParam;
@@ -47,16 +49,7 @@ class GradientBooster : public Model, public Configurable {
    * @param cfg configurations on both training and model parameters.
    */
   virtual void Configure(Args const& cfg) = 0;
-  /*!
-   * \brief load model from stream
-   * \param fi input stream.
-   */
-  virtual void Load(dmlc::Stream* fi) = 0;
-  /*!
-   * \brief save model to stream.
-   * \param fo output stream
-   */
-  virtual void Save(dmlc::Stream* fo) const = 0;
+
   /**
    * \brief Slice a model using boosting index. The slice m:n indicates taking all trees
    *        that were fit during the boosting rounds m, (m+1), (m+2), ..., (n-1).
@@ -86,8 +79,8 @@ class GradientBooster : public Model, public Configurable {
    *                   the booster may change content of gpair
    * @param obj The objective function used for boosting.
    */
-  virtual void DoBoost(DMatrix* p_fmat, linalg::Matrix<GradientPair>* in_gpair,
-                       PredictionCacheEntry*, ObjFunction const* obj) = 0;
+  virtual void DoBoost(DMatrix* p_fmat, GradientContainer* in_gpair,
+                       PredictionCacheEntry* prediction, ObjFunction const* obj) = 0;
 
   /**
    * \brief Generate predictions for given feature matrix
@@ -122,10 +115,10 @@ class GradientBooster : public Model, public Configurable {
    * \param out_preds output vector to hold the predictions
    * \param layer_begin Beginning of boosted tree layer used for prediction.
    * \param layer_end   End of booster layer. 0 means do not limit trees.
+   * @param strict_shape Validate whether it's actually possible to have uniform shape.
    */
-  virtual void PredictLeaf(DMatrix *dmat,
-                           HostDeviceVector<bst_float> *out_preds,
-                           unsigned layer_begin, unsigned layer_end) = 0;
+  virtual void PredictLeaf(DMatrix* dmat, HostDeviceVector<bst_float>* out_preds,
+                           bst_layer_t layer_begin, bst_layer_t layer_end, bool strict_shape) = 0;
 
   /*!
    * \brief feature contributions to individual predictions; the output will be a vector
@@ -144,30 +137,32 @@ class GradientBooster : public Model, public Configurable {
                                                bst_layer_t layer_begin, bst_layer_t layer_end,
                                                bool approximate) = 0;
 
-  /*!
-   * \brief dump the model in the requested format
-   * \param fmap feature map that may help give interpretations of feature
-   * \param with_stats extra statistics while dumping model
-   * \param format the format to dump the model in
-   * \return a vector of dump for boosters.
+  /**
+   * @brief dump the model in the requested format
+   * @param fmap feature map that may help give interpretations of feature
+   * @param with_stats extra statistics while dumping model
+   * @param format the format to dump the model in
+   * @return a vector of dump for boosters.
    */
   [[nodiscard]] virtual std::vector<std::string> DumpModel(const FeatureMap& fmap, bool with_stats,
                                                            std::string format) const = 0;
 
-  virtual void FeatureScore(std::string const& importance_type,
-                            common::Span<int32_t const> trees,
+  virtual void FeatureScore(std::string const& importance_type, common::Span<int32_t const> trees,
                             std::vector<bst_feature_t>* features,
                             std::vector<float>* scores) const = 0;
   /**
-   * @brief Whether the current booster uses GPU.
+   * @brief Getter for categories.
    */
-  [[nodiscard]] virtual bool UseGPU() const = 0;
-  /*!
-   * \brief create a gradient booster from given name
-   * \param name name of gradient booster
-   * \param generic_param Pointer to runtime parameters
-   * \param learner_model_param pointer to global model parameters
-   * \return The created booster.
+  [[nodiscard]] virtual CatContainer const* Cats() const {
+    LOG(FATAL) << "Retrieving categories is not supported by the current booster.";
+    return nullptr;
+  }
+  /**
+   * @brief create a gradient booster from given name
+   * @param name name of gradient booster
+   * @param generic_param Pointer to runtime parameters
+   * @param learner_model_param pointer to global model parameters
+   * @return The created booster.
    */
   static GradientBooster* Create(const std::string& name, Context const* ctx,
                                  LearnerModelParam const* learner_model_param);
@@ -194,10 +189,10 @@ struct GradientBoosterReg
  *   });
  * \endcode
  */
-#define XGBOOST_REGISTER_GBM(UniqueId, Name)                            \
-  static DMLC_ATTRIBUTE_UNUSED ::xgboost::GradientBoosterReg &          \
-  __make_ ## GradientBoosterReg ## _ ## UniqueId ## __ =                \
-      ::dmlc::Registry< ::xgboost::GradientBoosterReg>::Get()->__REGISTER__(Name)
+#define XGBOOST_REGISTER_GBM(UniqueId, Name)                  \
+  static DMLC_ATTRIBUTE_UNUSED ::xgboost::GradientBoosterReg& \
+      __make_##GradientBoosterReg##_##UniqueId##__ =          \
+          ::dmlc::Registry< ::xgboost::GradientBoosterReg>::Get()->__REGISTER__(Name)
 
 }  // namespace xgboost
 #endif  // XGBOOST_GBM_H_

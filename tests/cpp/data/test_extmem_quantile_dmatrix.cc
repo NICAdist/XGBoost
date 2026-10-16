@@ -1,5 +1,5 @@
 /**
- * Copyright 2024, XGBoost Contributors
+ * Copyright 2024-2026, XGBoost Contributors
  */
 #include "test_extmem_quantile_dmatrix.h"  // for TestExtMemQdmBasic
 
@@ -7,6 +7,7 @@
 #include <xgboost/data.h>  // for BatchParam
 
 #include <algorithm>  // for equal
+#include <vector>     // for vector
 
 #include "../../../src/common/column_matrix.h"  // for ColumnMatrix
 #include "../../../src/data/gradient_index.h"   // for GHistIndexMatrix
@@ -22,7 +23,6 @@ class ExtMemQuantileDMatrixCpu : public ::testing::TestWithParam<float> {
       auto orig_cuts = orig.Cuts();
       auto sparse_cuts = sparse.Cuts();
       ASSERT_EQ(orig_cuts.Values(), sparse_cuts.Values());
-      ASSERT_EQ(orig_cuts.MinValues(), sparse_cuts.MinValues());
       ASSERT_EQ(orig_cuts.Ptrs(), sparse_cuts.Ptrs());
 
       auto orig_ptr = orig.data.data();

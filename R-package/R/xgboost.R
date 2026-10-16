@@ -324,6 +324,8 @@ process.y.margin.and.objective <- function(
     n_targets <- 1L
     if (objective == "reg:quantileerror" && NROW(params$quantile_alpha) > 1) {
       n_targets <- NROW(params$quantile_alpha)
+    } else if (objective == "reg:expectileerror" && NROW(params$expectile_alpha) > 1) {
+      n_targets <- NROW(params$expectile_alpha)
     }
 
     if (!is.null(base_margin)) {
@@ -924,7 +926,8 @@ check.early.stopping.rounds <- function(early_stopping_rounds, eval_set) {
 #' - `"reg:squaredlogerror"`: regression with squared log loss \eqn{\frac{1}{2}[log(pred + 1) - log(label + 1)]^2}.  All input labels are required to be greater than -1.  Also, see metric `rmsle` for possible issue  with this objective.
 #' - `"reg:pseudohubererror"`: regression with Pseudo Huber loss, a twice differentiable alternative to absolute loss.
 #' - `"reg:absoluteerror"`: Regression with L1 error. When tree model is used, leaf value is refreshed after tree construction. If used in distributed training, the leaf value is calculated as the mean value from all workers, which is not guaranteed to be optimal.
-#' - `"reg:quantileerror"`: Quantile loss, also known as "pinball loss". See later sections for its parameter and [Quantile Regression](https://xgboost.readthedocs.io/en/latest/python/examples/quantile_regression.html#sphx-glr-python-examples-quantile-regression-py) for a worked example.
+#' - `"reg:quantileerror"`: Quantile loss, also known as "pinball loss". See later sections for its parameter and [Prediction Intervals](https://xgboost.readthedocs.io/en/latest/python/examples/prediction_intervals.html#sphx-glr-python-examples-prediction-intervals-py) for a worked example.
+#' - `"reg:expectileerror"`: Expectile loss. See later sections for its parameter.
 #' - `"binary:logistic"`: logistic regression for binary classification, output probability
 #' - `"binary:hinge"`: hinge loss for binary classification. This makes predictions of 0 or 1, rather than producing probabilities.
 #' - `"count:poisson"`: Poisson regression for count data, output mean of Poisson distribution.
@@ -1072,7 +1075,6 @@ check.early.stopping.rounds <- function(early_stopping_rounds, eval_set) {
 #' @inheritParams xgb.train
 #' @return A model object, inheriting from both `xgboost` and `xgb.Booster`. Compared to the regular
 #'   `xgb.Booster` model class produced by [xgb.train()], this `xgboost` class will have an
-#'
 #'   additional attribute `metadata` containing information which is used for formatting prediction
 #'   outputs, such as class names for classification problems.
 #'
@@ -1154,7 +1156,6 @@ xgboost <- function(
   disable_default_eval_metric = NULL,
   use_rmm = NULL,
   max_cached_hist_node = NULL,
-  extmem_single_page = NULL,
   max_cat_to_onehot = NULL,
   max_cat_threshold = NULL,
   sample_type = NULL,
@@ -1167,6 +1168,7 @@ xgboost <- function(
   tweedie_variance_power = NULL,
   huber_slope = NULL,
   quantile_alpha = NULL,
+  expectile_alpha = NULL,
   aft_loss_distribution = NULL,
   ...
 ) {
@@ -1194,6 +1196,10 @@ xgboost <- function(
     use_qdm
   )
   eval_set <- process.eval.set(eval_set, lst_args)
+  early_stopping_rounds <- check.early.stopping.rounds(
+    early_stopping_rounds,
+    eval_set
+  )
 
   if (use_qdm && hasName(params, "max_bin")) {
     lst_args$dmatrix_args$max_bin <- params$max_bin
@@ -1225,7 +1231,8 @@ xgboost <- function(
     nrounds = nrounds,
     verbose = verbosity,
     print_every_n = print_every_n,
-    evals = evals
+    evals = evals,
+    early_stopping_rounds = early_stopping_rounds
   )
   attributes(model)$metadata <- lst_args$metadata
   attributes(model)$call <- match.call()
@@ -1452,6 +1459,12 @@ predict.xgboost <- function(
         warning("Cannot add quantile names to output due to clashes in their character conversions")
         names_use <- NULL
       }
+    } else if (NROW(attributes(object)$params$expectile_alpha) > 1L) {
+      names_use <- paste0("e", attributes(object)$params$expectile_alpha)
+      if (anyDuplicated(names_use)) {
+        warning("Cannot add expectile names to output due to clashes in their character conversions")
+        names_use <- NULL
+      }
     }
     if (NROW(names_use)) {
       dimnames_out <- dimnames(out)
@@ -1504,6 +1517,15 @@ print.xgboost <- function(x, ...) {
       ifelse(length(attributes(x)$params$quantile_alpha) > 1L, "s", ""),
       ": ",
       printable_head(attributes(x)$params$quantile_alpha),
+      "\n",
+      sep = ""
+    )
+  } else if (NROW(attributes(x)$params$expectile_alpha)) {
+    cat(
+      "Prediction expectile",
+      ifelse(length(attributes(x)$params$expectile_alpha) > 1L, "s", ""),
+      ": ",
+      printable_head(attributes(x)$params$expectile_alpha),
       "\n",
       sep = ""
     )
@@ -1596,6 +1618,7 @@ NULL
 #' @importFrom stats sd
 #' @importFrom stats variable.names
 #' @importFrom utils head
+#' @importFrom utils hasName
 #' @importFrom graphics barplot
 #' @importFrom graphics lines
 #' @importFrom graphics points

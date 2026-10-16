@@ -2,16 +2,16 @@
  * Copyright 2022-2024, XGBoost contributors.
  */
 #include <gtest/gtest.h>
-#include <xgboost/base.h>                         // for bst_node_t
-#include <xgboost/context.h>                      // for Context
+#include <xgboost/base.h>     // for bst_node_t
+#include <xgboost/context.h>  // for Context
 
-#include <algorithm>                              // for transform
-#include <iterator>                               // for distance
-#include <vector>                                 // for vector
+#include <algorithm>  // for transform
+#include <iterator>   // for distance
+#include <vector>     // for vector
 
-#include "../../../src/common/numeric.h"          // for ==RunLengthEncode
-#include "../../../src/common/row_set.h"          // for RowSetCollection
-#include "../../../src/data/gradient_index.h"     // for GHistIndexMatrix
+#include "../../../src/common/numeric.h"       // for ==RunLengthEncode
+#include "../../../src/common/row_set.h"       // for RowSetCollection
+#include "../../../src/data/gradient_index.h"  // for GHistIndexMatrix
 #include "../../../src/tree/common_row_partitioner.h"
 #include "../../../src/tree/hist/expand_entry.h"  // for CPUExpandEntry
 #include "../helpers.h"                           // for RandomDataGenerator
@@ -23,7 +23,7 @@ void TestLeafPartition(size_t n_samples) {
   size_t const n_features = 2, base_rowid = 0;
   Context ctx;
   common::RowSetCollection row_set;
-  CommonRowPartitioner partitioner{&ctx, n_samples, base_rowid, false};
+  CommonRowPartitioner partitioner{&ctx, n_samples, base_rowid};
 
   auto Xy = RandomDataGenerator{n_samples, n_features, 0}.GenerateDMatrix(true);
   std::vector<CPUExpandEntry> candidates{{0, 0}};
@@ -49,9 +49,9 @@ void TestLeafPartition(size_t n_samples) {
     auto ptr = page.cut.Ptrs()[split_ind + 1];
     split_value = page.cut.Values().at(ptr / 2);
     GetSplit(&tree, split_value, &candidates);
-    partitioner.UpdatePosition(&ctx, page, candidates, &tree);
+    partitioner.UpdatePosition(&ctx, page, candidates, tree.HostScView());
     std::vector<bst_node_t> position(page.Size());
-    partitioner.LeafPartition(&ctx, tree, hess, position);
+    partitioner.LeafPartition(&ctx, tree.HostScView(), hess, position);
     std::sort(position.begin(), position.end());
     size_t beg = std::distance(
         position.begin(),
@@ -109,9 +109,9 @@ void TestExternalMemory() {
       GetSplit(&tree, split_value, &candidates);
     }
 
-    partitioners.emplace_back(&ctx, page.Size(), page.base_rowid, false);
-    partitioners.back().UpdatePosition(&ctx, page, candidates, &tree);
-    partitioners.back().LeafPartition(&ctx, tree, t_gpair, position);
+    partitioners.emplace_back(&ctx, page.Size(), page.base_rowid);
+    partitioners.back().UpdatePosition(&ctx, page, candidates, tree.HostScView());
+    partitioners.back().LeafPartition(&ctx, tree.HostScView(), t_gpair, position);
   }
 
   bst_idx_t n_left{0};

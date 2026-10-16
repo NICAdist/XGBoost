@@ -25,7 +25,7 @@ namespace xgboost {
 TEST(Objective, PredTransform) {
   // Test that show PredTransform uses the same device with predictor.
   xgboost::Context tparam;
-  tparam.UpdateAllowUnknown(Args{{"gpu_id", "0"}});
+  tparam.UpdateAllowUnknown(Args{{"device", "cuda"}});
   size_t n = 100;
 
   for (const auto& entry : ::dmlc::Registry<::xgboost::ObjFunctionReg>::List()) {
@@ -35,6 +35,9 @@ TEST(Objective, PredTransform) {
     }
     if (entry->name.find("quantile") != std::string::npos) {
       obj->Configure(Args{{"quantile_alpha", "0.5"}});
+    }
+    if (entry->name.find("expectile") != std::string::npos) {
+      obj->Configure(Args{{"expectile_alpha", "0.5"}});
     }
     HostDeviceVector<float> predts;
     predts.Resize(n, 3.14f);  // prediction is performed on host.
@@ -50,7 +53,7 @@ class TestDefaultObjConfig : public ::testing::TestWithParam<std::string> {
 
  public:
   void Run(std::string objective) {
-    auto Xy = MakeFmatForObjTest(objective, 10, 10);
+    auto Xy = MakeFmatForObjTest(objective, 10, 10, 3);
     std::unique_ptr<Learner> learner{Learner::Create({Xy})};
     std::unique_ptr<ObjFunction> objfn{ObjFunction::Create(objective, &ctx_)};
 
@@ -61,6 +64,9 @@ class TestDefaultObjConfig : public ::testing::TestWithParam<std::string> {
     } else if (objective.find("quantile") != std::string::npos) {
       learner->SetParam("quantile_alpha", "0.5");
       objfn->Configure(Args{{"quantile_alpha", "0.5"}});
+    } else if (objective.find("expectile") != std::string::npos) {
+      learner->SetParam("expectile_alpha", "0.5");
+      objfn->Configure(Args{{"expectile_alpha", "0.5"}});
     } else {
       objfn->Configure(Args{});
     }
@@ -101,4 +107,4 @@ INSTANTIATE_TEST_SUITE_P(Objective, TestDefaultObjConfig,
                          [](const ::testing::TestParamInfo<TestDefaultObjConfig::ParamType>& info) {
                            return ObjTestNameGenerator(info);
                          });
-} // namespace xgboost
+}  // namespace xgboost

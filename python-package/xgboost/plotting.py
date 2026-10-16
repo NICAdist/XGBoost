@@ -1,6 +1,7 @@
-# pylint: disable=too-many-locals, too-many-arguments, invalid-name,
+# pylint: disable=too-many-locals, too-many-arguments
 # pylint: disable=too-many-branches
 """Plotting Library."""
+
 import json
 import warnings
 from io import BytesIO
@@ -120,7 +121,7 @@ def plot_importance(
 
     if show_values is True:
         for x, y in zip(values, ylocs):
-            ax.text(x + 1, y, values_format.format(v=x), va="center")
+            ax.text(x + 1, float(y), values_format.format(v=x), va="center")
 
     ax.set_yticks(ylocs)
     ax.set_yticklabels(labels)
@@ -244,7 +245,7 @@ def to_graphviz(
         if kwargs.get("graph_attrs", None) is not None:
             kwargs["graph_attrs"][key] = value
         else:
-            kwargs["graph_attrs"] = {}
+            kwargs["graph_attrs"] = {key: value}
         del kwargs[key]
 
     if yes_color is not None or no_color is not None:
@@ -265,7 +266,7 @@ def to_graphviz(
 
     if num_trees is not None:
         warnings.warn(
-            "The `num_trees` parameter is deprecated, use `tree_idx` insetad. ",
+            "The `num_trees` parameter is deprecated, use `tree_idx` instead. ",
             FutureWarning,
         )
         if tree_idx not in (0, num_trees):

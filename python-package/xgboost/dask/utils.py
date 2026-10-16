@@ -2,9 +2,13 @@
 
 import logging
 import warnings
+from functools import cache as fcache
 from typing import Any, Dict, Optional, Tuple
 
+import dask
 import distributed
+from packaging.version import Version
+from packaging.version import parse as parse_version
 
 from ..collective import Config
 
@@ -13,8 +17,8 @@ LOGGER = logging.getLogger("[xgboost.dask]")
 
 def get_n_threads(local_param: Dict[str, Any], worker: "distributed.Worker") -> int:
     """Get the number of threads from a worker and the user-supplied parameters."""
-    # dask worker nthreads, "state" is available in 2022.6.1
-    dwnt = worker.state.nthreads if hasattr(worker, "state") else worker.nthreads
+    # dask worker nthreads
+    dwnt = worker.state.nthreads
     n_threads = None
     for p in ["nthread", "n_jobs"]:
         if local_param.get(p, None) is not None and local_param.get(p, dwnt) != dwnt:
@@ -97,3 +101,18 @@ def get_address_from_user(
         port = coll_cfg.tracker_port
 
     return host_ip, port
+
+
+@fcache
+def _DASK_VERSION() -> Version:
+    return parse_version(dask.__version__)
+
+
+@fcache
+def _DASK_2024_12_1() -> bool:
+    return _DASK_VERSION() >= parse_version("2024.12.1")
+
+
+@fcache
+def _DASK_2025_3_0() -> bool:
+    return _DASK_VERSION() >= parse_version("2025.3.0")

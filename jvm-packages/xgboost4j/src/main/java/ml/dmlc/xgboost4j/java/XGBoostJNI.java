@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2014-2023 by Contributors
+ Copyright (c) 2014-2026 by Contributors
 
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ import org.apache.commons.logging.LogFactory;
  *
  * @author hzx
  */
-class XGBoostJNI {
+public class XGBoostJNI {
   private static final Log logger = LogFactory.getLog(DMatrix.class);
 
   static {
@@ -52,7 +52,7 @@ class XGBoostJNI {
 
   public final static native String XGBGetLastError();
 
-  public final static native int XGDMatrixCreateFromFile(String fname, int silent, long[] out);
+  public final static native int XGDMatrixCreateFromURI(String uri, int silent, long[] out);
 
   final static native int XGDMatrixCreateFromDataIter(java.util.Iterator<DataBatch> iter,
       String cache_info, float missing, long[] out);
@@ -89,7 +89,7 @@ class XGBoostJNI {
 
   /**
    * Set the feature information
-   * 
+   *
    * @param handle the DMatrix native address
    * @param field  "feature_names" or "feature_types"
    * @param values an array of string
@@ -198,4 +198,7 @@ class XGBoostJNI {
   public final static native int XGBSetGlobalConfig(String config);
 
   public final static native int XGBGetGlobalConfig(String[] out);
+
+  // CUDA device management functions
+  public final static native int CudaSetDevice(int deviceId);
 }

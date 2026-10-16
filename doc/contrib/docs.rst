@@ -11,8 +11,8 @@ Documentation and Examples
 *************
 Documentation
 *************
-* Python and C documentation is built using `Sphinx <http://www.sphinx-doc.org/en/master/>`_.
-* Each document is written in `reStructuredText <http://www.sphinx-doc.org/en/master/usage/restructuredtext/basics.html>`_.
+* Python and C documentation is built using `Sphinx <https://www.sphinx-doc.org/en/master/>`_.
+* Each document is written in `reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/basics.html>`_.
 * The documentation is the ``doc/`` directory.
 * You can build it locally using ``make html`` command.
 
@@ -32,9 +32,9 @@ Build the Python Docs using pip and Conda
 
    .. code-block:: bash
 
-     conda create -n xgboost-docs --yes python=3.10
+     conda create -n xgboost-docs --yes python=3.12
 
-   .. note:: Python 3.10 is required by `xgboost_ray <https://github.com/ray-project/xgboost_ray>`__ package.
+   .. note:: Python is required to match XGBoost's minimum supported Python version.
 
 #. Activate the environment
 
@@ -107,8 +107,12 @@ build directory. Following is a list of environment variables used by the fetche
 
  - ``READTHEDOCS``: Read the docs flag. Build the full documentation site including R, JVM and
    C doc when set to ``True`` (case sensitive).
- - ``XGBOOST_R_DOCS``: Local path for pre-built R document, used for development.
- - ``XGBOOST_JVM_DOCS``: Local path for pre-built JVM document, used for development.
+ - ``XGBOOST_R_DOCS``: Local path for pre-built R document, used for development. If it
+   points to a file that doesn't exist, the configuration script will download the
+   packaged document to that path for future reuse.
+ - ``XGBOOST_JVM_DOCS``: Local path for pre-built JVM document, used for
+   development. Similar to the R docs environment variable when it points to a non-existent
+   file.
 
 As of writing, RTD doesn't provide any facility to be embedded as a GitHub action but we
 need a way to specify the dependency between the CI pipelines and the document build in
@@ -122,3 +126,22 @@ Examples
 * We are super excited to hear about your story. If you have blog posts,
   tutorials, or code solutions using XGBoost, please tell us, and we will add
   a link in the example pages.
+
+*********
+Doc Tests
+*********
+
+We use Sphinx doctest to test selected snippets in the documentation. At the moment, this
+only covers Python and R snippets written with ``.. code-tab:: python`` or ``.. code-tab::
+r``. Regular code blocks are rendered as examples but are not executed by the doctest job.
+
+The doctest job runs snippets from each ``.rst`` file as an independent group. Snippets in
+the same document share state, while snippets from different documents do not. To skip a
+tabbed snippet, add the ``no-doctest`` class:
+
+.. code-block:: rst
+
+  .. code-tab:: python
+     :class: no-doctest
+
+     # This snippet is rendered but not tested.

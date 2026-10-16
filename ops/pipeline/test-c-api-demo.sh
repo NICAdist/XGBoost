@@ -6,7 +6,14 @@ set -euox pipefail
 # Build and install XGBoost static library (libxgboost.a)
 mkdir build
 pushd build
-cmake .. -DBUILD_STATIC_LIB=ON -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX -GNinja
+
+cmake .. \
+  -GNinja \
+  -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX \
+  -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+  -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+  -DBUILD_STATIC_LIB=ON
+
 ninja -v install
 popd
 
@@ -23,8 +30,7 @@ popd
 
 # Build and install XGBoost shared library (libxgboost.so)
 pushd build
-cmake .. -DBUILD_STATIC_LIB=OFF -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX -GNinja \
-  -DPLUGIN_FEDERATED=ON
+cmake .. -DBUILD_STATIC_LIB=OFF -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX -GNinja
 ninja -v install
 popd
 

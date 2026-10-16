@@ -1,15 +1,14 @@
 /**
- * Copyright 2017-2025, XGBoost contributors
+ * Copyright 2017-2026, XGBoost contributors
  */
 #ifndef XGBOOST_OBJECTIVE_REGRESSION_LOSS_H_
 #define XGBOOST_OBJECTIVE_REGRESSION_LOSS_H_
 
-#include <dmlc/omp.h>
-
 #include <cmath>
 
+#include "../common/common.h"  // Min, Max
 #include "../common/math.h"
-#include "xgboost/logging.h"
+#include "xgboost/string_view.h"
 #include "xgboost/task.h"  // ObjInfo
 
 namespace xgboost::obj {
@@ -21,12 +20,16 @@ struct LinearSquareLoss {
     return predt - label;
   }
   XGBOOST_DEVICE static bst_float SecondOrderGradient(bst_float, bst_float) { return 1.0f; }
-  static bst_float ProbToMargin(bst_float base_score) { return base_score; }
+
+  XGBOOST_DEVICE static float ProbToMargin(float base_score) { return base_score; }
+  constexpr static StringView InterceptErrorMsg() { return ""; }
+  XGBOOST_DEVICE static bool CheckIntercept(float) { return true; }
+
   static const char* LabelErrorMsg() { return ""; }
   static const char* DefaultEvalMetric() { return "rmse"; }
 
   static const char* Name() { return "reg:squarederror"; }
-  static ObjInfo Info() { return {ObjInfo::kRegression, true, false}; }
+  static ObjInfo Info() { return {ObjInfo::kRegression, true}; }
 };
 
 struct SquaredLogError {
@@ -42,7 +45,11 @@ struct SquaredLogError {
     res = fmaxf(res, 1e-6f);
     return res;
   }
-  static bst_float ProbToMargin(bst_float base_score) { return base_score; }
+
+  XGBOOST_DEVICE static float ProbToMargin(float base_score) { return base_score; }
+  constexpr static StringView InterceptErrorMsg() { return ""; }
+  XGBOOST_DEVICE static bool CheckIntercept(float) { return true; }
+
   static const char* LabelErrorMsg() {
     return "label must be greater than -1 for rmsle so that log(label + 1) can be valid.";
   }
@@ -64,12 +71,21 @@ struct LogisticRegression {
     const float eps = 1e-16f;
     return fmaxf(predt * (1.0f - predt), eps);
   }
-  static bst_float ProbToMargin(bst_float base_score) {
-    CHECK(base_score > 0.0f && base_score < 1.0f)
-        << "base_score must be in (0,1) for logistic loss, got: " << base_score;
-    return -logf(1.0f / base_score - 1.0f);
+  XGBOOST_DEVICE static float ProbToMargin(float base_score) {
+    // Bound the base score
+    base_score = common::Min(common::Max(base_score, kRtEps), 1.0f - kRtEps);
+    return common::Logit(base_score);
   }
-  static const char* LabelErrorMsg() { return "label must be in [0,1] for logistic regression"; }
+  constexpr static StringView InterceptErrorMsg() {
+    return "base_score must be in (0,1) for the logistic loss.";
+  }
+  XGBOOST_DEVICE static bool CheckIntercept(float base_score) {
+    // We accept equality for degenerate cases where all label is the same.
+    // https://github.com/dmlc/xgboost/issues/11499
+    return base_score >= 0.0f && base_score <= 1.0f;
+  }
+
+  static const char* LabelErrorMsg() { return "label must be in (0, 1) for logistic regression"; }
   static const char* DefaultEvalMetric() { return "rmse"; }
 
   static const char* Name() { return "reg:logistic"; }
@@ -96,7 +112,11 @@ struct LogisticRaw : public LogisticRegression {
     predt = common::Sigmoid(predt);
     return fmaxf(predt * (1.0f - predt), eps);
   }
-  static bst_float ProbToMargin(bst_float base_score) { return base_score; }
+
+  XGBOOST_DEVICE static float ProbToMargin(float base_score) { return base_score; }
+  constexpr static StringView InterceptErrorMsg() { return ""; }
+  XGBOOST_DEVICE static bool CheckIntercept(float) { return true; }
+
   static const char* DefaultEvalMetric() { return "logloss"; }
 
   static const char* Name() { return "binary:logitraw"; }
@@ -108,10 +128,14 @@ struct LogisticRaw : public LogisticRegression {
 class GammaDeviance {
  public:
   XGBOOST_DEVICE static float PredTransform(float x) { return std::exp(x); }
+
   XGBOOST_DEVICE static float ProbToMargin(float x) { return std::log(x); }
-  XGBOOST_DEVICE static float FirstOrderGradient(float p, float y) {
-    return 1.0f - y / p;
+  constexpr static StringView InterceptErrorMsg() {
+    return "`base_score` must be greater than 0 for gamma regression";
   }
+  XGBOOST_DEVICE static bool CheckIntercept(float base_score) { return base_score > 0; }
+
+  XGBOOST_DEVICE static float FirstOrderGradient(float p, float y) { return 1.0f - y / p; }
   XGBOOST_DEVICE static float SecondOrderGradient(float p, float y) { return y / p; }
   static ObjInfo Info() { return ObjInfo::kRegression; }
   static const char* Name() { return "reg:gamma"; }
@@ -119,5 +143,16 @@ class GammaDeviance {
   XGBOOST_DEVICE static bool CheckLabel(float x) { return x > 0.0f; }
   static const char* LabelErrorMsg() { return "label must be positive for gamma regression."; }
 };
+
+// Label validation for Poisson regression (labels must be non-negative)
+struct PoissonLabel {
+  XGBOOST_DEVICE static bool CheckLabel(float x) { return x >= 0.0f; }
+  static const char* LabelErrorMsg() {
+    return "label must be non-negative for Poisson/Tweedie regression.";
+  }
+};
+
+// Label validation for Tweedie regression (labels must be non-negative)
+using TweedieLabel = PoissonLabel;
 }  // namespace xgboost::obj
 #endif  // XGBOOST_OBJECTIVE_REGRESSION_LOSS_H_

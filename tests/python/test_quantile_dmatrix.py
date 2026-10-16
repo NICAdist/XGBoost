@@ -2,25 +2,23 @@ from typing import Any, Dict, List
 
 import numpy as np
 import pytest
+import xgboost as xgb
 from hypothesis import given, settings, strategies
 from scipy import sparse
-
-import xgboost as xgb
 from xgboost.testing import (
     IteratorForTest,
     make_batches,
     make_batches_sparse,
     make_categorical,
-    make_ltr,
     make_sparse_regression,
-    predictor_equal,
 )
-from xgboost.testing.data import check_inf, np_dtypes
+from xgboost.testing.data import check_inf, make_ltr, np_dtypes
 from xgboost.testing.data_iter import run_mixed_sparsity
 from xgboost.testing.quantile_dmatrix import (
     check_categorical_strings,
     check_ref_quantile_cut,
 )
+from xgboost.testing.utils import predictor_equal
 
 
 class TestQuantileDMatrix:
@@ -70,7 +68,7 @@ class TestQuantileDMatrix:
         X, y = make_categorical(
             n_samples=128, n_features=2, n_categories=3, onehot=False
         )
-        reg = xgb.XGBRegressor(tree_method="hist", enable_categorical=True)
+        reg = xgb.XGBRegressor(tree_method="hist")
         w = rng.uniform(0, 1, size=y.shape[0])
 
         X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
@@ -297,13 +295,13 @@ class TestQuantileDMatrix:
         X, y = make_categorical(
             n_samples, n_features, n_categories=13, onehot=False, sparsity=sparsity
         )
-        Xy = xgb.DMatrix(X, y, enable_categorical=True)
+        Xy = xgb.DMatrix(X, y)
 
         booster = xgb.train({"tree_method": "hist"}, Xy)
 
-        Xy = xgb.DMatrix(X, y, enable_categorical=True)
+        Xy = xgb.DMatrix(X, y)
         a = booster.predict(Xy)
-        qXy = xgb.QuantileDMatrix(X, y, enable_categorical=True)
+        qXy = xgb.QuantileDMatrix(X, y)
         b = booster.predict(qXy)
         np.testing.assert_allclose(a, b)
 
@@ -388,16 +386,22 @@ class TestQuantileDMatrix:
         np.testing.assert_allclose(p0, p1)
 
         X, y = make_categorical(128, 16, 5, onehot=False, sparsity=0.9)
-        Xy = xgb.QuantileDMatrix(X, y, enable_categorical=True)
+        Xy = xgb.QuantileDMatrix(X, y)
         booster = xgb.train({}, Xy, num_boost_round=8)
 
         p0 = booster.predict(Xy)
-        Xy = xgb.DMatrix(X, y, enable_categorical=True)
+        Xy = xgb.DMatrix(X, y)
         p1 = booster.predict(Xy)
         np.testing.assert_allclose(p0, p1)
 
     def test_cv_error(self) -> None:
         X, y = make_sparse_regression(8, 2, sparsity=0.2, as_dense=False)
         Xy = xgb.QuantileDMatrix(X, y)
-        with pytest.raises(ValueError, match=""):
-            cv = xgb.cv({}, Xy, 10, nfold=10, early_stopping_rounds=10)
+        with pytest.raises(ValueError):
+            xgb.cv({}, Xy, 10, nfold=10, early_stopping_rounds=10)
+
+
+def test_feature_types() -> None:
+    it = IteratorForTest(*make_batches(32, 8, 4, False), cache=None)
+    with pytest.raises(ValueError, match="specified as batch argument"):
+        xgb.QuantileDMatrix(it, feature_types=["q"] * 8)

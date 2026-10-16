@@ -64,7 +64,8 @@ namespace xgboost {
 void SetCudaSetDeviceHandler(void (*handler)(int));
 #endif  // __CUDACC__
 
-template <typename T> struct HostDeviceVectorImpl;
+template <typename T>
+class HostDeviceVectorImpl;
 
 /*!
  * \brief Controls data access from the GPU.
@@ -78,7 +79,8 @@ template <typename T> struct HostDeviceVectorImpl;
  *   - Data is being manipulated on the host. Host has write access, device doesn't have access.
  */
 enum GPUAccess {
-  kNone, kRead,
+  kNone,
+  kRead,
   // write implies read
   kWrite
 };
@@ -101,6 +103,7 @@ class HostDeviceVector {
 
   [[nodiscard]] bool Empty() const { return Size() == 0; }
   [[nodiscard]] std::size_t Size() const;
+  [[nodiscard]] std::size_t SizeBytes() const { return this->Size() * sizeof(T); }
   [[nodiscard]] DeviceOrd Device() const;
   common::Span<T> DeviceSpan();
   common::Span<const T> ConstDeviceSpan() const;
@@ -125,7 +128,7 @@ class HostDeviceVector {
 
   std::vector<T>& HostVector();
   const std::vector<T>& ConstHostVector() const;
-  const std::vector<T>& HostVector() const {return ConstHostVector(); }
+  const std::vector<T>& HostVector() const { return ConstHostVector(); }
 
   [[nodiscard]] bool HostCanRead() const;
   [[nodiscard]] bool HostCanWrite() const;

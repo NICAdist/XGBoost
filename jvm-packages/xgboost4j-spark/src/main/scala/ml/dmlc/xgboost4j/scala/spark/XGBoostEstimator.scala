@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2024-2025 by Contributors
+ Copyright (c) 2024-2026 by Contributors
 
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -29,10 +29,10 @@ import org.apache.spark.ml.functions.array_to_vector
 import org.apache.spark.ml.linalg.{SparseVector, Vector}
 import org.apache.spark.ml.param.{Param, ParamMap}
 import org.apache.spark.ml.util.{DefaultParamsWritable, MLReader, MLWritable, MLWriter}
-import org.apache.spark.ml.xgboost.{SparkUtils, XGBProbabilisticClassifierParams}
+import org.apache.spark.ml.xgboost.{SparkUtils, XGBPredictorParams, XGBProbabilisticClassifierParams}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
-import org.apache.spark.sql.functions.{col, udf}
+import org.apache.spark.sql.functions.{array, col, udf}
 import org.apache.spark.sql.types._
 
 import ml.dmlc.xgboost4j.{LabeledPoint => XGBLabeledPoint}
@@ -150,7 +150,12 @@ private[spark] trait XGBoostEstimator[
     // Get feature id(s)
     val (featureIds: Option[Seq[Int]], featureId: Option[Int]) =
       if (getFeaturesCols.length != 0) {
-        (Some(getFeaturesCols.map(schema.fieldIndex).toSeq), None)
+        // Columnars has been converted to array
+        if (schema.names.contains(Utils.TMP_FEATURE_ARRAY_NAME)) {
+          (None, Some(schema.fieldIndex(Utils.TMP_FEATURE_ARRAY_NAME)))
+        } else {
+          (Some(getFeaturesCols.map(schema.fieldIndex).toSeq), None)
+        }
       } else {
         (None, Some(schema.fieldIndex(getFeaturesCol)))
       }
@@ -188,30 +193,36 @@ private[spark] trait XGBoostEstimator[
   private[spark] def preprocess(dataset: Dataset[_]): (Dataset[_], ColumnIndices) = {
     val schema = dataset.schema
     validateFeatureType(schema)
-    val featureIsArray: Boolean = featureIsArrayType(schema)
 
     // Columns to be selected for XGBoost training
     val selectedCols: ArrayBuffer[Column] = ArrayBuffer.empty
 
     def selectCol(c: Param[String], targetType: DataType) = {
       if (isDefinedNonEmpty(c)) {
-        if (c == featuresCol) {
-          // If feature is array type, we force to cast it to array of float
-          val featureCol = if (featureIsArray) {
-            col($(featuresCol)).cast(ArrayType(FloatType))
-          } else col($(featuresCol))
-          selectedCols.append(featureCol)
-        } else {
           selectedCols.append(castIfNeeded(schema, $(c), targetType))
-        }
       }
     }
 
-    Seq(labelCol, featuresCol, weightCol, baseMarginCol).foreach(p => selectCol(p, FloatType))
+    Seq(labelCol, weightCol, baseMarginCol).foreach(p => selectCol(p, FloatType))
     this match {
       case p: HasGroupCol => selectCol(p.groupCol, IntegerType)
       case _ =>
     }
+
+    val featureCol = if (isSet(featuresCols)) {
+      // Make columnar to array
+      array(getFeaturesCols.map(col): _*)
+        .cast(ArrayType(FloatType))
+        .alias(Utils.TMP_FEATURE_ARRAY_NAME)
+    } else {
+      if (featureIsArrayType(schema)) {
+        col($(featuresCol)).cast(ArrayType(FloatType))
+      } else {
+        col($(featuresCol))
+      }
+    }
+    selectedCols.append(featureCol)
+
     val repartitioned = repartitionIfNeeded(dataset.select(selectedCols.toArray: _*))
     val sorted = sortPartitionIfNeeded(repartitioned)
     val columnIndices = buildColumnIndices(sorted.schema)
@@ -250,7 +261,7 @@ private[spark] trait XGBoostEstimator[
           // To make "0" meaningful, we convert sparse vector if possible to dense.
           features.toArray.map(_.toFloat)
       }
-      XGBLabeledPoint(label, values.length, null, values, weight, group, baseMargin)
+      new XGBLabeledPoint(label, values.length, null, values, weight, group, baseMargin)
     }
   }
 
@@ -363,7 +374,7 @@ private[spark] trait XGBoostEstimator[
 
   private[spark] def getRuntimeParameters(isLocal: Boolean,
       configs: Map[String, AnyRef] = Map.empty): RuntimeParams = {
-    val runOnGpu = if (getDevice != "cpu" || getTreeMethod == "gpu_hist") true else false
+    val runOnGpu = if (getDevice != "cpu") true else false
     RuntimeParams(
       getNumWorkers,
       getNumRound,
@@ -604,22 +615,29 @@ private[spark] trait XGBoostModel[M <: XGBoostModel[M]] extends Model[M] with ML
     if (PluginUtils.isPluginEnabled(dataset)) {
       return PluginUtils.getPlugin.get.transform(this, dataset)
     }
-    validateFeatureType(dataset.schema)
     val (schema, pred) = preprocess(dataset)
-    // Broadcast the booster to each executor.
-    val bBooster = dataset.sparkSession.sparkContext.broadcast(nativeBooster)
-    // TODO configurable
-    val inferBatchSize = 32 << 10
-    val featureName = getFeaturesCol
-    val missing = getMissing
+    // Model could be trained with columnar, and the transform df could be array or vector
+    val (input, featureName, featureIsArray) = if (isSet(featuresCols) &&
+      getFeaturesCols.length > 0 &&
+      getFeaturesCols.forall(schema.names.contains)) {
+      (dataset.withColumn(Utils.TMP_FEATURE_ARRAY_NAME,
+        array(getFeaturesCols.map(col): _*).cast(ArrayType(FloatType))),
+        Utils.TMP_FEATURE_ARRAY_NAME,
+        true)
+    } else {
+      (dataset, getFeaturesCol, featureIsArrayType(dataset.schema))
+    }
 
-    val featureIsArray = featureIsArrayType(dataset.schema)
+    // Broadcast the booster to each executor.
+    val bBooster = input.sparkSession.sparkContext.broadcast(nativeBooster)
+    val inferBatchSize = getInferBatchSize
+    val missing = getMissing
 
     // Here, we use RDD instead of DF to avoid different encoders for different
     // spark versions for the compatibility issue.
     // 3.5+, Encoders.row(schema)
     // 3.5-, RowEncoder(schema)
-    val outRDD = dataset.asInstanceOf[Dataset[Row]].rdd.mapPartitions { rowIter =>
+    val outRDD = input.asInstanceOf[Dataset[Row]].rdd.mapPartitions { rowIter =>
       rowIter.grouped(inferBatchSize).flatMap { batchRow =>
         val features = batchRow.iterator.map(row => {
           if (!featureIsArray) {
@@ -636,7 +654,7 @@ private[spark] trait XGBoostModel[M <: XGBoostModel[M]] extends Model[M] with ML
                 }
               case _ => throw new RuntimeException("Unsupported feature type")
             }
-            XGBLabeledPoint(0.0f, values.size, null, values)
+            new XGBLabeledPoint(0.0f, values.size, null, values)
           }
         })
         // DMatrix used to prediction
@@ -648,7 +666,8 @@ private[spark] trait XGBoostModel[M <: XGBoostModel[M]] extends Model[M] with ML
         }
       }
     }
-    val output = dataset.sparkSession.createDataFrame(outRDD, schema)
+    val output = input.sparkSession.createDataFrame(outRDD, schema)
+      .drop(Utils.TMP_FEATURE_ARRAY_NAME)
 
     bBooster.unpersist(blocking = false)
     postTransform(output, pred).toDF()
@@ -706,7 +725,8 @@ private[spark] abstract class XGBoostModelReader[M <: XGBoostModel[M]] extends M
 }
 
 // Trait for Ranker and Regressor Model
-private[spark] trait RankerRegressorBaseModel[M <: XGBoostModel[M]] extends XGBoostModel[M] {
+private[spark] trait RankerRegressorBaseModel[M <: XGBoostModel[M]] extends XGBoostModel[M]
+  with XGBPredictorParams[M] {
 
   override protected[spark] def postTransform(dataset: Dataset[_],
                                               pred: PredictedColumns): Dataset[_] = {

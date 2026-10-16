@@ -8,6 +8,7 @@ from xgboost import testing as tm
 
 from ..compat import import_cupy
 from ..core import DataIter, DMatrix, ExtMemQuantileDMatrix, QuantileDMatrix
+from .utils import predictor_equal
 
 
 def run_mixed_sparsity(device: str) -> None:
@@ -36,7 +37,7 @@ def run_mixed_sparsity(device: str) -> None:
     y_arr = np.concatenate(y, axis=0)
     Xy_1 = QuantileDMatrix(X_arr, y_arr)
 
-    assert tm.predictor_equal(Xy_0, Xy_1)
+    assert predictor_equal(Xy_0, Xy_1)
 
 
 def check_invalid_cat_batches(device: str) -> None:
@@ -75,8 +76,14 @@ def check_invalid_cat_batches(device: str) -> None:
     it = _InvalidCatIter()
     import pytest
 
-    with pytest.raises(ValueError, match="Inconsistent feature types between batches"):
+    with pytest.raises(ValueError, match="Inconsistent number of categories between"):
         ExtMemQuantileDMatrix(it, enable_categorical=True)
+
+    with pytest.raises(ValueError, match="Inconsistent number of categories between"):
+        QuantileDMatrix(it, enable_categorical=True)
+
+    with pytest.raises(ValueError, match="Inconsistent feature types"):
+        DMatrix(it, enable_categorical=True)
 
 
 def check_uneven_sizes(device: str) -> None:
@@ -112,6 +119,7 @@ class CatIter(DataIter):  # pylint: disable=too-many-instance-attributes
         onehot: bool,
         device: str,
         cache: Optional[str],
+        n_targets: int = 1,
     ) -> None:
         super().__init__(cache_prefix=cache)
         self.n_batches = n_batches
@@ -125,6 +133,7 @@ class CatIter(DataIter):  # pylint: disable=too-many-instance-attributes
             onehot=onehot,
             cat_ratio=cat_ratio,
             sparsity=sparsity,
+            n_targets=n_targets,
         )
         xs, ys = [], []
 

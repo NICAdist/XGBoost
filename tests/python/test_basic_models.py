@@ -1,19 +1,13 @@
 import json
-import os
-import tempfile
-from typing import Optional
+from pathlib import Path
 
 import numpy as np
 import pytest
-
 import xgboost as xgb
 from xgboost import testing as tm
 from xgboost.core import Integer
-from xgboost.testing.updater import ResetStrategy
-
-dpath = tm.data_dir(__file__)
-
-rng = np.random.RandomState(1994)
+from xgboost.testing.basic_models import run_custom_objective
+from xgboost.testing.updater import get_basescore
 
 
 class TestModels:
@@ -37,7 +31,7 @@ class TestModels:
         ) / float(len(preds))
         assert err < 0.2
 
-    def test_dart(self):
+    def test_dart(self, tmp_path: Path) -> None:
         dtrain, dtest = tm.load_agaricus(__file__)
         param = {
             "max_depth": 5,
@@ -59,17 +53,15 @@ class TestModels:
         # error must be smaller than 10%
         assert err < 0.1
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dtest_path = os.path.join(tmpdir, "dtest.dmatrix")
-            model_path = os.path.join(tmpdir, "xgboost.model.dart.ubj")
-            # save dmatrix into binary buffer
-            dtest.save_binary(dtest_path)
-            model_path = model_path
-            # save model
-            bst.save_model(model_path)
-            # load model and data in
-            bst2 = xgb.Booster(params=param, model_file=model_path)
-            dtest2 = xgb.DMatrix(dtest_path)
+        dtest_path = tmp_path / "dtest.dmatrix"
+        model_path = tmp_path / "xgboost.model.dart.ubj"
+        # save dmatrix into binary buffer
+        dtest.save_binary(dtest_path)
+        # save model
+        bst.save_model(model_path)
+        # load model and data in
+        bst2 = xgb.Booster(params=param, model_file=model_path)
+        dtest2 = xgb.DMatrix(dtest_path)
 
         preds2 = bst2.predict(dtest2, iteration_range=(0, num_round))
 
@@ -157,73 +149,11 @@ class TestModels:
         )
         assert booster.num_boosted_rounds() == 8
 
-    def run_custom_objective(self, tree_method: Optional[str] = None):
-        param = {
-            "max_depth": 2,
-            "eta": 1,
-            "objective": "reg:logistic",
-            "tree_method": tree_method,
-        }
+    def test_custom_objective(self) -> None:
         dtrain, dtest = tm.load_agaricus(__file__)
-        watchlist = [(dtest, "eval"), (dtrain, "train")]
-        num_round = 10
+        run_custom_objective("hist", "cpu", dtrain, dtest)
 
-        def evalerror(preds: np.ndarray, dtrain: xgb.DMatrix):
-            return tm.eval_error_metric(preds, dtrain, rev_link=True)
-
-        # test custom_objective in training
-        bst = xgb.train(
-            param,
-            dtrain,
-            num_round,
-            watchlist,
-            obj=tm.logregobj,
-            custom_metric=evalerror,
-        )
-        assert isinstance(bst, xgb.Booster)
-        preds = bst.predict(dtest)
-        labels = dtest.get_label()
-        err = sum(
-            1 for i in range(len(preds)) if int(preds[i] > 0.5) != labels[i]
-        ) / float(len(preds))
-        assert err < 0.1
-
-        # test custom_objective in cross-validation
-        xgb.cv(
-            param,
-            dtrain,
-            num_round,
-            nfold=5,
-            seed=0,
-            obj=tm.logregobj,
-            custom_metric=evalerror,
-        )
-
-        # test maximize parameter
-        def neg_evalerror(preds, dtrain):
-            labels = dtrain.get_label()
-            preds = 1.0 / (1.0 + np.exp(-preds))
-            return "error", float(sum(labels == (preds > 0.0))) / len(labels)
-
-        bst2 = xgb.train(
-            param,
-            dtrain,
-            num_round,
-            evals=watchlist,
-            obj=tm.logregobj,
-            custom_metric=neg_evalerror,
-            maximize=True,
-        )
-        preds2 = bst2.predict(dtest)
-        err2 = sum(
-            1 for i in range(len(preds2)) if int(preds2[i] > 0.5) != labels[i]
-        ) / float(len(preds2))
-        assert err == err2
-
-    def test_custom_objective(self):
-        self.run_custom_objective()
-
-    def test_multi_eval_metric(self):
+    def test_multi_eval_metric(self) -> None:
         dtrain, dtest = tm.load_agaricus(__file__)
         watchlist = [(dtest, "eval"), (dtrain, "train")]
         param = {
@@ -274,26 +204,25 @@ class TestModels:
             show_stdv=False,
         )
 
-    def test_prediction_cache(self) -> None:
+    def test_prediction_cache(self, tmp_path: Path) -> None:
         X, y = tm.make_sparse_regression(512, 4, 0.5, as_dense=False)
         Xy = xgb.DMatrix(X, y)
         param = {"max_depth": 8}
         booster = xgb.train(param, Xy, num_boost_round=1)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, "model.json")
-            booster.save_model(path)
+        path = tmp_path / "model.json"
+        booster.save_model(path)
 
-            predt_0 = booster.predict(Xy)
+        predt_0 = booster.predict(Xy)
 
-            param["max_depth"] = 2
+        param["max_depth"] = 2
 
-            booster = xgb.train(param, Xy, num_boost_round=1)
-            predt_1 = booster.predict(Xy)
-            assert not np.isclose(predt_0, predt_1).all()
+        booster = xgb.train(param, Xy, num_boost_round=1)
+        predt_1 = booster.predict(Xy)
+        assert not np.isclose(predt_0, predt_1).all()
 
-            booster.load_model(path)
-            predt_2 = booster.predict(Xy)
-            np.testing.assert_allclose(predt_0, predt_2)
+        booster.load_model(path)
+        predt_2 = booster.predict(Xy)
+        np.testing.assert_allclose(predt_0, predt_2)
 
     def test_feature_names_validation(self):
         X = np.random.random((10, 3))
@@ -310,44 +239,6 @@ class TestModels:
 
         bst = xgb.train([], dm2)
         bst.predict(dm2)  # success
-
-    @pytest.mark.skipif(**tm.no_json_schema())
-    def test_json_dump_schema(self):
-        import jsonschema
-
-        def validate_model(parameters):
-            X = np.random.random((100, 30))
-            y = np.random.randint(0, 4, size=(100,))
-
-            parameters["num_class"] = 4
-            m = xgb.DMatrix(X, y)
-
-            booster = xgb.train(parameters, m)
-            dump = booster.get_dump(dump_format="json")
-
-            for i in range(len(dump)):
-                jsonschema.validate(instance=json.loads(dump[i]), schema=schema)
-
-        path = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )
-        doc = os.path.join(path, "doc", "dump.schema")
-        with open(doc, "r") as fd:
-            schema = json.load(fd)
-
-        parameters = {
-            "tree_method": "hist",
-            "booster": "gbtree",
-            "objective": "multi:softmax",
-        }
-        validate_model(parameters)
-
-        parameters = {
-            "tree_method": "hist",
-            "booster": "dart",
-            "objective": "multi:softmax",
-        }
-        validate_model(parameters)
 
     def test_special_model_dump_characters(self) -> None:
         params = {"objective": "reg:squarederror", "max_depth": 3}
@@ -462,7 +353,9 @@ class TestModels:
         predt_0 = sliced_0.predict(dtrain, output_margin=True)
         predt_1 = sliced_1.predict(dtrain, output_margin=True)
 
-        merged = predt_0 + predt_1 - 0.5  # base score.
+        # base score.
+        intercept = np.broadcast_to(np.array(get_basescore(booster)), predt_0.shape)
+        merged = predt_0 + predt_1 - intercept
         single = booster[1:7].predict(dtrain, output_margin=True)
         np.testing.assert_allclose(merged, single, atol=1e-6)
 
@@ -472,7 +365,7 @@ class TestModels:
         predt_0 = sliced_0.predict(dtrain, output_margin=True)
         predt_1 = sliced_1.predict(dtrain, output_margin=True)
 
-        merged = predt_0 + predt_1 - 0.5
+        merged = predt_0 + predt_1 - intercept
         single = booster[1:7].predict(dtrain, output_margin=True)
         np.testing.assert_allclose(merged, single, atol=1e-6)
 
@@ -516,55 +409,15 @@ class TestModels:
             booster, dtrain, num_parallel_tree, num_classes, num_boost_round, False
         )
 
-        bytesarray = booster.save_raw(raw_format="deprecated")
-        booster = xgb.Booster(model_file=bytesarray)
-        self.run_slice(
-            booster, dtrain, num_parallel_tree, num_classes, num_boost_round, True
-        )
-
-    def test_slice_multi(self) -> None:
-        from sklearn.datasets import make_classification
-
-        num_classes = 3
-        X, y = make_classification(
-            n_samples=1000, n_informative=5, n_classes=num_classes
-        )
-        Xy = xgb.DMatrix(data=X, label=y)
-        num_parallel_tree = 4
-        num_boost_round = 16
-
-        booster = xgb.train(
-            {
-                "num_parallel_tree": num_parallel_tree,
-                "num_class": num_classes,
-                "booster": "gbtree",
-                "objective": "multi:softprob",
-                "multi_strategy": "multi_output_tree",
-                "tree_method": "hist",
-                "base_score": 0,
-            },
-            num_boost_round=num_boost_round,
-            dtrain=Xy,
-            callbacks=[ResetStrategy()],
-        )
-        sliced = [t for t in booster]
-        assert len(sliced) == 16
-
-        predt0 = booster.predict(Xy, output_margin=True)
-        predt1 = np.zeros(predt0.shape)
-        for t in booster:
-            predt1 += t.predict(Xy, output_margin=True)
-
-        np.testing.assert_allclose(predt0, predt1, atol=1e-5)
-
     @pytest.mark.skipif(**tm.no_pandas())
     @pytest.mark.parametrize("ext", ["json", "ubj"])
-    def test_feature_info(self, ext: str) -> None:
+    def test_feature_info(self, ext: str, tmp_path: Path) -> None:
         import pandas as pd
 
         # make data
         rows = 100
         cols = 10
+        rng = np.random.RandomState(1994)
         X = rng.randn(rows, cols)
         y = rng.randn(rows)
 
@@ -582,14 +435,13 @@ class TestModels:
         assert booster.feature_names == feature_names
         assert booster.feature_types == Xy.feature_types
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = tmpdir + f"model.{ext}"
-            booster.save_model(path)
-            booster = xgb.Booster()
-            booster.load_model(path)
+        path = tmp_path / f"model.{ext}"
+        booster.save_model(path)
+        booster = xgb.Booster()
+        booster.load_model(path)
 
-            assert booster.feature_names == Xy.feature_names
-            assert booster.feature_types == Xy.feature_types
+        assert booster.feature_names == Xy.feature_names
+        assert booster.feature_types == Xy.feature_types
 
         # Test with numpy, no feature info is set
         Xy = xgb.DMatrix(X, y)
@@ -606,9 +458,8 @@ class TestModels:
 
         assert booster.feature_names == fns
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, f"model.{ext}")
-            booster.save_model(path)
+        path = tmp_path / f"model2.{ext}"
+        booster.save_model(path)
 
-            booster = xgb.Booster(model_file=path)
-            assert booster.feature_names == fns
+        booster = xgb.Booster(model_file=path)
+        assert booster.feature_names == fns

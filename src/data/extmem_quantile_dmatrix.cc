@@ -1,5 +1,5 @@
 /**
- * Copyright 2024, XGBoost Contributors
+ * Copyright 2024-2026, XGBoost Contributors
  */
 #include "extmem_quantile_dmatrix.h"
 
@@ -7,6 +7,7 @@
 #include <string>  // for string
 #include <vector>  // for vector
 
+#include "../common/error_msg.h"    // for CacheHostRatio, InconsistentMaxBin
 #include "../tree/param.h"          // FIXME(jiamingy): Find a better way to share this parameter.
 #include "batch_utils.h"            // for CheckParam, RegenGHist
 #include "proxy_dmatrix.h"          // for DataIterProxy
@@ -23,7 +24,6 @@ ExtMemQuantileDMatrix::ExtMemQuantileDMatrix(DataIterHandle iter_handle, DMatrix
                                              std::shared_ptr<DMatrix> ref,
                                              DataIterResetCallback *reset,
                                              XGDMatrixCallbackNext *next, bst_bin_t max_bin,
-                                             std::int64_t max_quantile_blocks,
                                              ExtMemConfig const &config)
     : cache_prefix_{config.cache}, on_host_{config.on_host} {
   cache_prefix_ = MakeCachePrefix(cache_prefix_);
@@ -35,18 +35,23 @@ ExtMemQuantileDMatrix::ExtMemQuantileDMatrix(DataIterHandle iter_handle, DMatrix
   CHECK(valid) << "Qauntile DMatrix must have at least 1 batch.";
 
   auto pctx = MakeProxy(proxy)->Ctx();
-  Context ctx;
-  ctx.Init(Args{{"nthread", std::to_string(config.n_threads)}, {"device", pctx->DeviceName()}});
+  {
+    Context ctx;
+    ctx.Init(Args{{"nthread", std::to_string(config.n_threads)}, {"device", pctx->DeviceName()}});
+    this->fmat_ctx_ = ctx;
+  }
 
   BatchParam p{max_bin, tree::TrainParam::DftSparseThreshold()};
-  if (ctx.IsCPU()) {
-    this->InitFromCPU(&ctx, iter, proxy, p, config.missing, ref);
+  if (fmat_ctx_.IsCPU()) {
+    CHECK(detail::HostRatioIsAuto(config.cache_host_ratio)) << error::CacheHostRatioNotImpl();
+    this->InitFromCPU(&fmat_ctx_, iter, proxy, p, config.missing, ref);
   } else {
     p.n_prefetch_batches = ::xgboost::cuda_impl::DftPrefetchBatches();
-    this->InitFromCUDA(&ctx, iter, proxy, p, ref, max_quantile_blocks, config);
+    this->InitFromCUDA(&fmat_ctx_, iter, proxy, p, ref, config);
   }
   this->batch_ = p;
-  this->fmat_ctx_ = ctx;
+
+  SyncCategories(&fmat_ctx_, info_.Cats(), info_.num_row_ == 0);
 }
 
 ExtMemQuantileDMatrix::~ExtMemQuantileDMatrix() {
@@ -73,12 +78,13 @@ void ExtMemQuantileDMatrix::InitFromCPU(
   auto proxy = MakeProxy(proxy_handle);
   CHECK(proxy);
 
-  common::HistogramCuts cuts;
+  common::HistogramCuts cuts{0};
   ExternalDataInfo ext_info;
-  cpu_impl::GetDataShape(ctx, proxy, *iter, missing, &ext_info);
-  ext_info.SetInfo(ctx, &this->info_);
+  cpu_impl::GetDataShape(ctx, proxy, iter.get(), missing, &ext_info);
+  ext_info.SetInfo(ctx, true, &this->info_);
 
   this->n_batches_ = ext_info.n_batches;
+  this->batch_ptr_ = ext_info.base_rowids;
 
   /**
    * Generate quantiles
@@ -140,8 +146,7 @@ BatchSet<GHistIndexMatrix> ExtMemQuantileDMatrix::GetGradientIndex(Context const
 #if !defined(XGBOOST_USE_CUDA)
 void ExtMemQuantileDMatrix::InitFromCUDA(
     Context const *, std::shared_ptr<DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>>,
-    DMatrixHandle, BatchParam const &, std::shared_ptr<DMatrix>, std::int64_t,
-    ExtMemConfig const &) {
+    DMatrixHandle, BatchParam const &, std::shared_ptr<DMatrix>, ExtMemConfig const &) {
   common::AssertGPUSupport();
 }
 

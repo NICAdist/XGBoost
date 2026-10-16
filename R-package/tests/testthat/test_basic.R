@@ -409,7 +409,7 @@ test_that("xgb.cv invalid inputs", {
 
   expect_error(
     cv <- xgb.cv(
-      data = xgb.QuantileDMatrix(x_df, label = y),
+      data = xgb.QuantileDMatrix(x_df, label = y, nthread = n_threads),
       nfold = 5,
       nrounds = 2,
       params = xgb.params(
@@ -421,7 +421,7 @@ test_that("xgb.cv invalid inputs", {
   )
   expect_error(
     cv <- xgb.cv(
-      data = xgb.DMatrix(x_df, label = y),
+      data = xgb.DMatrix(x_df, label = y, nthread = n_threads),
       nfold = 5,
       nrounds = 2,
       params = xgb.params(
@@ -986,6 +986,7 @@ test_that("Seed in params override PRNG from R", {
       max_depth = 3L,
       subsample = 0.1,
       colsample_bytree = 0.1,
+      nthread = n_threads,
       seed = 111L
     ),
     nrounds = 3L
@@ -1002,6 +1003,7 @@ test_that("Seed in params override PRNG from R", {
       max_depth = 3L,
       subsample = 0.1,
       colsample_bytree = 0.1,
+      nthread = n_threads,
       seed = 111L
     ),
     nrounds = 3L
@@ -1023,6 +1025,7 @@ test_that("Seed in params override PRNG from R", {
       max_depth = 3L,
       subsample = 0.1,
       colsample_bytree = 0.1,
+      nthread = n_threads,
       seed = 222L
     ),
     nrounds = 3L
@@ -1133,4 +1136,101 @@ test_that("Row names are preserved in outputs", {
   expect_equal(row.names(pred), row.names(x))
   pred <- predict(model, x, predleaf = TRUE, avoid_transpose = TRUE)
   expect_equal(colnames(pred), row.names(x))
+})
+
+test_that("xgb.train works with nrounds=0 (serialization, continuation, callbacks)", {
+  # Reuse global data variable 'train' defined at the top of test_basic.R
+  dtrain <- xgb.DMatrix(train$data, label = train$label, nthread = 1)
+  watchlist <- list(train = dtrain)
+
+  # --- Case 1: Basic check & Serialization symmetry ---
+  bst_0 <- xgb.train(
+    params = list(objective = "binary:logistic", nthread = 1),
+    data = dtrain,
+    nrounds = 0,
+    verbose = 0
+  )
+
+  # Check niter is 0 (handling NULL case common for empty boosters)
+  iter_0 <- bst_0$niter
+  if (is.null(iter_0)) {
+    iter_0 <- 0
+  }
+  expect_equal(iter_0, 0)
+
+  # Check that 0-round model provides a valid "base score" prediction
+  preds_0 <- predict(bst_0, dtrain)
+  expect_true(all((preds_0 >= 0) & (preds_0 <= 1)))
+
+  # Serialize via RAM (Raw) instead of disk (tempfile) for cleaner tests
+  raw <- xgb.save.raw(bst_0)
+  bst_loaded <- xgb.load.raw(raw)
+
+  # Verify predictions match before/after serialization
+  preds_loaded <- predict(bst_loaded, dtrain)
+  expect_equal(preds_0, preds_loaded, tolerance = 1e-6)
+
+  # --- Case 2: Training Continuation Numeric Consistency ---
+  # Initialize empty model with fixed seed & single thread
+  bst_init <- xgb.train(
+    params = list(objective = "binary:logistic", seed = 123, nthread = 1),
+    data = dtrain,
+    nrounds = 0,
+    verbose = 0
+  )
+
+  # Continue training for 10 rounds from empty booster
+  bst_cont <- xgb.train(
+    params = list(objective = "binary:logistic", seed = 123, nthread = 1),
+    data = dtrain,
+    nrounds = 10,
+    xgb_model = bst_init,
+    verbose = 0
+  )
+
+  # Reference training from scratch
+  bst_ref <- xgb.train(
+    params = list(objective = "binary:logistic", seed = 123, nthread = 1),
+    data = dtrain,
+    nrounds = 10,
+    verbose = 0
+  )
+
+  # Predictions must be numerically identical within 1e-6
+  p_cont <- predict(bst_cont, dtrain)
+  p_ref <- predict(bst_ref, dtrain)
+  expect_equal(p_cont, p_ref, tolerance = 1e-6)
+
+  # --- Case 3: Callback Robustness ---
+  # Verify early stopping and evals work with nrounds=0
+  bst_cb <- xgb.train(
+    params = list(objective = "binary:logistic", seed = 456, nthread = 1),
+    data = dtrain,
+    nrounds = 0,
+    evals = watchlist,
+    early_stopping_rounds = 3,
+    verbose = 0
+  )
+
+  # Verify that continuation works
+  bst_cb_cont <- xgb.train(
+    params = list(objective = "binary:logistic", seed = 456, nthread = 1),
+    data = dtrain,
+    nrounds = 5,
+    evals = watchlist,
+    early_stopping_rounds = 3,
+    xgb_model = bst_cb,
+    verbose = 0
+  )
+
+  # Handle NULL niter for continued model with early stopping
+  iter_cb <- bst_cb_cont$niter
+  if (is.null(iter_cb)) {
+    # Verify the continued model works and learned signal
+    preds_cb <- predict(bst_cb_cont, dtrain)
+    expect_true(stats::sd(preds_cb) > 0)
+    expect_equal(length(preds_cb), nrow(train$data))
+  } else {
+    expect_equal(iter_cb, 5)
+  }
 })

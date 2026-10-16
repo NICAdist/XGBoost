@@ -1,20 +1,41 @@
 /**
- * Copyright 2024, XGBoost Contributors
+ * Copyright 2024-2026, XGBoost Contributors
  */
 #include <gtest/gtest.h>
-#include <thread>  // for thread
+#include <thrust/iterator/counting_iterator.h>  // for make_counting_iterator
+#include <thrust/sequence.h>                    // for sequence
 
-#include <numeric>                     // for iota
-#include <thrust/detail/sequence.inl>  // for sequence
+#include <numeric>  // for iota
+#include <thread>   // for thread
 
+#include "../../../src/common/cuda_context.cuh"    // for CUDAContext
 #include "../../../src/common/cuda_rt_utils.h"     // for DrVersion
-#include "../../../src/common/device_helpers.cuh"  // for CachingThrustPolicy, PinnedMemory
+#include "../../../src/common/device_helpers.cuh"  // for PinnedMemory
 #include "../../../src/common/device_vector.cuh"
+#include "../helpers.h"             // for MakeCUDACtx
 #include "xgboost/global_config.h"  // for GlobalConfigThreadLocalStore
-#include "xgboost/windefs.h"  // for xgboost_IS_WIN
+#include "xgboost/windefs.h"        // for xgboost_IS_WIN
 
 namespace dh {
+#if !defined(XGBOOST_USE_RMM)
+TEST(AsyncPoolAllocator, Basic) {
+  if (!xgboost::curt::MemoryPoolsSupported(xgboost::curt::CurrentDevice())) {
+    GTEST_SKIP_("The async memory pool is not available on the current device.");
+  }
+
+  for (bool use_async_pool : {true, false}) {
+    detail::XGBAsyncPoolAllocator<float> alloc;
+    alloc.SetAsync(use_async_pool);
+    std::size_t n = 16;
+    auto ptr = alloc.allocate(n);
+    ASSERT_TRUE(ptr);
+    alloc.deallocate(ptr, n);
+  }
+}
+#endif  // !defined(XGBOOST_USE_RMM)
+
 TEST(DeviceUVector, Basic) {
+  auto ctx = xgboost::MakeCUDACtx(0);
   GlobalMemoryLogger().Clear();
   std::int32_t verbosity{3};
   std::swap(verbosity, xgboost::GlobalConfigThreadLocalStore::Get()->verbosity);
@@ -24,6 +45,26 @@ TEST(DeviceUVector, Basic) {
   auto n_bytes = sizeof(decltype(uvec)::value_type) * uvec.size();
   ASSERT_EQ(peak, n_bytes);
   std::swap(verbosity, xgboost::GlobalConfigThreadLocalStore::Get()->verbosity);
+
+  DeviceUVector<double> uvec1{16};
+  ASSERT_EQ(uvec1.size(), 16);
+  uvec1.resize(3);
+  ASSERT_EQ(uvec1.size(), 3);
+  ASSERT_EQ(uvec1.Capacity(), 16);
+  ASSERT_EQ(std::distance(uvec1.begin(), uvec1.end()), uvec1.size());
+  auto orig = uvec1.size();
+
+  thrust::sequence(ctx.CUDACtx()->CTP(), uvec1.begin(), uvec1.end(), 0);
+  uvec1.resize(32);
+  ASSERT_EQ(uvec1.size(), 32);
+  ASSERT_EQ(uvec1.Capacity(), 32);
+  auto eq = thrust::equal(ctx.CUDACtx()->CTP(), uvec1.cbegin(), uvec1.cbegin() + orig,
+                          thrust::make_counting_iterator(0));
+  ASSERT_TRUE(eq);
+
+  uvec1.clear();
+  ASSERT_EQ(uvec1.size(), 0);
+  ASSERT_EQ(uvec1.Capacity(), 32);
 }
 
 #if defined(__linux__)
@@ -31,6 +72,7 @@ namespace {
 class TestVirtualMem : public ::testing::TestWithParam<CUmemLocationType> {
  public:
   void Run() {
+    auto ctx = xgboost::MakeCUDACtx(0);
     auto type = this->GetParam();
     detail::GrowOnlyVirtualMemVec vec{type};
     auto prop = xgboost::cudr::MakeAllocProp(type);
@@ -48,7 +90,7 @@ class TestVirtualMem : public ::testing::TestWithParam<CUmemLocationType> {
     };
     auto fill = [&](std::int32_t n_orig, xgboost::common::Span<std::int32_t> data) {
       if (type == CU_MEM_LOCATION_TYPE_DEVICE) {
-        thrust::sequence(dh::CachingThrustPolicy(), data.data() + n_orig, data.data() + data.size(),
+        thrust::sequence(ctx.CUDACtx()->CTP(), data.data() + n_orig, data.data() + data.size(),
                          n_orig);
         dh::safe_cuda(cudaMemcpy(h_data.data(), data.data(), data.size_bytes(), cudaMemcpyDefault));
       } else {
@@ -108,15 +150,13 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST(TestVirtualMem, Version) {
   std::int32_t major, minor;
-  xgboost::curt::DrVersion(&major, &minor);
+  xgboost::curt::GetDrVersionGlobal(&major, &minor);
   LOG(INFO) << "Latest supported CUDA version by the driver:" << major << "." << minor;
   PinnedMemory pinned;
 #if defined(xgboost_IS_WIN)
   ASSERT_FALSE(pinned.IsVm());
-#else  // defined(xgboost_IS_WIN)
-  if (major > 12) {
-    ASSERT_TRUE(pinned.IsVm());
-  } else if (major >= 12 && minor >= 5) {
+#else   // defined(xgboost_IS_WIN)
+  if (major == 12 && minor >= 5 || major > 12) {
     ASSERT_TRUE(pinned.IsVm());
   } else {
     ASSERT_FALSE(pinned.IsVm());

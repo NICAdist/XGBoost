@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2024, XGBoost Contributors
+ * Copyright 2015-2026, XGBoost Contributors
  * \file data.h
  * \brief The input data structure of xgboost.
  * \author Tianqi Chen
@@ -8,8 +8,8 @@
 #define XGBOOST_DATA_H_
 
 #include <dmlc/base.h>
-#include <dmlc/data.h>
-#include <dmlc/serializer.h>
+#include <dmlc/io.h>          // for Stream
+#include <dmlc/serializer.h>  // for Handler
 #include <xgboost/base.h>
 #include <xgboost/host_device_vector.h>
 #include <xgboost/linalg.h>
@@ -17,6 +17,7 @@
 #include <xgboost/string_view.h>
 
 #include <algorithm>
+#include <array>    // for array
 #include <cstdint>  // for int32_t, uint8_t
 #include <limits>
 #include <memory>
@@ -30,25 +31,41 @@ class DMatrix;
 struct Context;
 
 /*! \brief data type accepted by xgboost interface */
-enum class DataType : uint8_t {
-  kFloat32 = 1,
-  kDouble = 2,
-  kUInt32 = 3,
-  kUInt64 = 4,
-  kStr = 5
-};
+enum class DataType : uint8_t { kFloat32 = 1, kDouble = 2, kUInt32 = 3, kUInt64 = 4, kStr = 5 };
 
 enum class FeatureType : uint8_t { kNumerical = 0, kCategorical = 1 };
 
-enum class DataSplitMode : int { kRow = 0, kCol = 1 };
+// Forward declaration of the container used by the meta info.
+class CatContainer;
 
-/*!
- * \brief Meta information about dataset, always sit in memory.
+/** @brief Used as a reference to a linalg::Matrix, or a vector */
+struct TypedArrayRef {
+  using SizeType = linalg::VectorView<float>::SizeType;
+  // 2-dim is the maximum for return type, we can use larger ones if needed.
+  using Shape = std::array<SizeType, 2>;
+
+  DataType dtype{DataType::kFloat32};
+  Shape shape{0, 0};
+  SizeType ndim{0};
+  void const* data{nullptr};
+
+  [[nodiscard]] std::string ArrayInterfaceStr() const;
+  [[nodiscard]] SizeType Size() const {
+    if (ndim == 1) {
+      return shape[0];
+    } else {
+      return shape[0] * shape[1];
+    }
+  }
+};
+
+/**
+ * @brief Meta information about dataset, always sit in memory.
  */
 class MetaInfo {
  public:
   /*! \brief number of data fields in MetaInfo */
-  static constexpr uint64_t kNumField = 12;
+  static constexpr uint64_t kNumField = 13;
 
   /*! \brief number of rows in the data */
   bst_idx_t num_row_{0};  // NOLINT
@@ -58,8 +75,6 @@ class MetaInfo {
   uint64_t num_nonzero_{0};  // NOLINT
   /*! \brief label of each instance */
   linalg::Tensor<float, 2> labels;
-  /*! \brief data split mode */
-  DataSplitMode data_split_mode{DataSplitMode::kRow};
   /*!
    * \brief the index of begin and end of a group
    *  needed when the learning task is ranking.
@@ -100,9 +115,9 @@ class MetaInfo {
    */
   HostDeviceVector<float> feature_weights;
 
-  /*! \brief default constructor */
-  MetaInfo()  = default;
+  MetaInfo();
   MetaInfo(MetaInfo&& that) = default;
+  MetaInfo(MetaInfo const& that) = delete;
   MetaInfo& operator=(MetaInfo&& that) = default;
   MetaInfo& operator=(MetaInfo const& that) = delete;
 
@@ -131,7 +146,7 @@ class MetaInfo {
    * \return The weight.
    */
   inline bst_float GetWeight(size_t i) const {
-    return weights_.Size() != 0 ?  weights_.HostVector()[i] : 1.0f;
+    return weights_.Size() != 0 ? weights_.HostVector()[i] : 1.0f;
   }
   /*! \brief get sorted indexes (argsort) of labels by absolute value (used by cox loss) */
   const std::vector<size_t>& LabelAbsSort(Context const* ctx) const;
@@ -147,18 +162,18 @@ class MetaInfo {
    * \param fo The output stream.
    */
   void SaveBinary(dmlc::Stream* fo) const;
-  /*!
-   * \brief Set information in the meta info with array interface.
-   * \param key The key of the information.
-   * \param interface_str String representation of json format array interface.
+  /**
+   * @brief Set information in the meta info with array interface.
+   *
+   * @param key The key of the information.
+   * @param in_array String representation of json format array interface.
    */
-  void SetInfo(Context const& ctx, StringView key, StringView interface_str);
+  void SetInfo(Context const& ctx, StringView key, StringView in_array);
+  /** @brief Return an array reference for a meta info. */
+  [[nodiscard]] TypedArrayRef GetInfo(Context const* ctx, StringView key) const;
 
-  void GetInfo(char const* key, bst_ulong* out_len, DataType dtype,
-               const void** out_dptr) const;
-
-  void SetFeatureInfo(const char *key, const char **info, const bst_ulong size);
-  void GetFeatureInfo(const char *field, std::vector<std::string>* out_str_vecs) const;
+  void SetFeatureInfo(const char* key, const char** info, const bst_ulong size);
+  void GetFeatureInfo(const char* field, std::vector<std::string>* out_str_vecs) const;
 
   /**
    * @brief Extend with other MetaInfo.
@@ -172,39 +187,25 @@ class MetaInfo {
    *                     columns.
    */
   void Extend(MetaInfo const& that, bool accumulate_rows, bool check_column);
-  /**
-   * @brief Synchronize the number of columns across all workers.
-   *
-   * Normally we just need to find the maximum number of columns across all workers, but
-   * in vertical federated learning, since each worker loads its own list of columns,
-   * we need to sum them.
-   */
-  void SynchronizeNumberOfColumns(Context const* ctx, DataSplitMode split_mode);
-
-  /** @brief Whether the data is split row-wise. */
-  [[nodiscard]] bool IsRowSplit() const { return data_split_mode == DataSplitMode::kRow; }
-  /** @brief Whether the data is split column-wise. */
-  [[nodiscard]] bool IsColumnSplit() const { return data_split_mode == DataSplitMode::kCol; }
+  /** @brief Synchronize the number of columns across all workers. */
+  void SynchronizeNumberOfColumns(Context const* ctx);
   /** @brief Whether this is a learning to rank data. */
   [[nodiscard]] bool IsRanking() const { return !group_ptr_.empty(); }
 
   /**
-   * @brief A convenient method to check if we are doing vertical federated learning, which requires
-   * some special processing.
-   */
-  [[nodiscard]] bool IsVerticalFederated() const;
-
-  /*!
-   * \brief A convenient method to check if the MetaInfo should contain labels.
-   *
-   * Normally we assume labels are available everywhere. The only exception is in vertical federated
-   * learning where labels are only available on worker 0.
-   */
-  bool ShouldHaveLabels() const;
-  /**
    * @brief Flag for whether the DMatrix has categorical features.
    */
   bool HasCategorical() const { return has_categorical_; }
+  /**
+   * @brief Getters for categories.
+   */
+  [[nodiscard]] CatContainer const* Cats() const;
+  [[nodiscard]] CatContainer* Cats();
+  [[nodiscard]] std::shared_ptr<CatContainer const> CatsShared() const;
+  /**
+   * @brief Setter for categories.
+   */
+  void Cats(std::shared_ptr<CatContainer> cats);
 
  private:
   void SetInfoFromHost(Context const* ctx, StringView key, Json arr);
@@ -213,6 +214,8 @@ class MetaInfo {
   /*! \brief argsort of labels */
   mutable std::vector<size_t> label_order_cache_;
   bool has_categorical_{false};
+
+  std::shared_ptr<CatContainer> cats_;
 };
 
 /*! \brief Element from a sparse vector */
@@ -230,12 +233,8 @@ struct Entry {
    */
   XGBOOST_DEVICE Entry(bst_feature_t index, bst_float fvalue) : index(index), fvalue(fvalue) {}
   /*! \brief reversely compare feature values */
-  inline static bool CmpValue(const Entry& a, const Entry& b) {
-    return a.fvalue < b.fvalue;
-  }
-  static bool CmpIndex(Entry const& a, Entry const& b) {
-    return a.index < b.index;
-  }
+  inline static bool CmpValue(const Entry& a, const Entry& b) { return a.fvalue < b.fvalue; }
+  static bool CmpIndex(Entry const& a, Entry const& b) { return a.index < b.index; }
   inline bool operator==(const Entry& other) const {
     return (this->index == other.index && this->fvalue == other.fvalue);
   }
@@ -276,7 +275,6 @@ struct BatchParam {
    * @brief The number of batches to pre-fetch for external memory.
    */
   std::int32_t n_prefetch_batches{3};
-
   /**
    * @brief Exact or others that don't need histogram.
    */
@@ -344,7 +342,7 @@ class SparsePage {
   /*! \brief the data of the segments */
   HostDeviceVector<Entry> data;
 
-  size_t base_rowid {0};
+  size_t base_rowid{0};
 
   /*! \brief an instance of sparse vector in the batch */
   using Inst = common::Span<Entry const>;
@@ -354,9 +352,7 @@ class SparsePage {
   }
 
   /*! \brief constructor */
-  SparsePage() {
-    this->Clear();
-  }
+  SparsePage() { this->Clear(); }
 
   SparsePage(SparsePage const& that) = delete;
   SparsePage(SparsePage&& that) = default;
@@ -365,9 +361,7 @@ class SparsePage {
   virtual ~SparsePage() = default;
 
   /*! \return Number of instances in the page. */
-  [[nodiscard]] size_t Size() const {
-    return offset.Size() == 0 ? 0 : offset.Size() - 1;
-  }
+  [[nodiscard]] size_t Size() const { return offset.Size() == 0 ? 0 : offset.Size() - 1; }
 
   /*! \return estimation of memory cost of this page */
   [[nodiscard]] size_t MemCostBytes() const {
@@ -384,9 +378,7 @@ class SparsePage {
   }
 
   /*! \brief Set the base row id for this page. */
-  inline void SetBaseRowId(size_t row_id) {
-    base_rowid = row_id;
-  }
+  inline void SetBaseRowId(size_t row_id) { base_rowid = row_id; }
 
   [[nodiscard]] SparsePage GetTranspose(int num_columns, int32_t n_threads) const;
 
@@ -416,13 +408,13 @@ class SparsePage {
    * \return  The maximum number of columns encountered in this input batch. Useful when pushing many adapter batches to work out the total number of columns.
    */
   template <typename AdapterBatchT>
-  uint64_t Push(const AdapterBatchT& batch, float missing, int nthread);
+  bst_idx_t Push(AdapterBatchT const& batch, float missing, std::int32_t nthread);
 
   /*!
    * \brief Push a sparse page
    * \param batch the row page
    */
-  void Push(const SparsePage &batch);
+  void Push(const SparsePage& batch);
   /*!
    * \brief Push a SparsePage stored in CSC format
    * \param batch The row batch to be pushed
@@ -430,7 +422,7 @@ class SparsePage {
   void PushCSC(const SparsePage& batch);
 };
 
-class CSCPage: public SparsePage {
+class CSCPage : public SparsePage {
  public:
   CSCPage() : SparsePage() {}
   explicit CSCPage(SparsePage page) : SparsePage(std::move(page)) {}
@@ -455,7 +447,7 @@ class SortedCSCPage : public SparsePage {
 class EllpackPage;
 class GHistIndexMatrix;
 
-template<typename T>
+template <typename T>
 class BatchIteratorImpl {
  public:
   using iterator_category = std::forward_iterator_tag;  // NOLINT
@@ -466,14 +458,14 @@ class BatchIteratorImpl {
   virtual std::shared_ptr<T const> Page() const = 0;
 };
 
-template<typename T>
+template <typename T>
 class BatchIterator {
  public:
   using iterator_category = std::forward_iterator_tag;  // NOLINT
   explicit BatchIterator(BatchIteratorImpl<T>* impl) { impl_.reset(impl); }
   explicit BatchIterator(std::shared_ptr<BatchIteratorImpl<T>> impl) { impl_ = impl; }
 
-  BatchIterator &operator++() {
+  BatchIterator& operator++() {
     CHECK(impl_ != nullptr);
     ++(*impl_);
     return *this;
@@ -491,19 +483,17 @@ class BatchIterator {
     return impl_->AtEnd();
   }
 
-  [[nodiscard]] std::shared_ptr<T const> Page() const {
-    return impl_->Page();
-  }
+  [[nodiscard]] std::shared_ptr<T const> Page() const { return impl_->Page(); }
 
  private:
   std::shared_ptr<BatchIteratorImpl<T>> impl_;
 };
 
-template<typename T>
+template <typename T>
 class BatchSet {
  public:
   explicit BatchSet(BatchIterator<T> begin_iter) : begin_iter_(std::move(begin_iter)) {}
-  BatchIterator<T> begin() { return begin_iter_; }  // NOLINT
+  BatchIterator<T> begin() { return begin_iter_; }              // NOLINT
   BatchIterator<T> end() { return BatchIterator<T>(nullptr); }  // NOLINT
 
  private:
@@ -517,26 +507,36 @@ struct ExtMemConfig {
   // Cache prefix, not used if the cache is in the host memory. (on_host is true)
   std::string cache;
   // Whether the ellpack page is stored in the host memory.
-  bool on_host{true};
+  bool on_host;
+  // Host cache/Total cache for the GPU impl.
+  float cache_host_ratio;
   // Minimum number of of bytes for each ellpack page in cache. Only used for in-host
   // ExtMemQdm.
-  std::int64_t min_cache_page_bytes{0};
+  std::int64_t min_cache_page_bytes;
   // Missing value.
-  float missing{std::numeric_limits<float>::quiet_NaN()};
-  // Maximum number of pages cached in device.
-  std::int64_t max_num_device_pages{0};
+  float missing;
   // The number of CPU threads.
   std::int32_t n_threads{0};
+  // The ratio of the cache that can be compressed. Used for testing.
+  float hw_decomp_ratio{std::numeric_limits<float>::quiet_NaN()};
+  // Fallback to using nvcomp. Used for testing.
+  bool allow_decomp_fallback{false};
 
-  ExtMemConfig() = default;
-  ExtMemConfig(std::string cache, bool on_host, std::int64_t min_cache, float missing,
-               std::int64_t max_num_d, std::int32_t n_threads)
+  ExtMemConfig() = delete;
+  ExtMemConfig(std::string cache, bool on_host, float h_ratio, std::int64_t min_cache,
+               float missing, std::int32_t n_threads)
       : cache{std::move(cache)},
         on_host{on_host},
+        cache_host_ratio{h_ratio},
         min_cache_page_bytes{min_cache},
         missing{missing},
-        max_num_device_pages{max_num_d},
         n_threads{n_threads} {}
+
+  ExtMemConfig& SetParamsForTest(float _hw_decomp_ratio, bool _allow_decomp_fallback) {
+    this->hw_decomp_ratio = _hw_decomp_ratio;
+    this->allow_decomp_fallback = _allow_decomp_fallback;
+    return *this;
+  }
 };
 
 /**
@@ -549,7 +549,7 @@ struct ExtMemConfig {
 class DMatrix {
  public:
   /*! \brief default constructor */
-  DMatrix()  = default;
+  DMatrix() = default;
   /** @brief meta information of the dataset */
   [[nodiscard]] virtual MetaInfo& Info() = 0;
   virtual void SetInfo(const char* key, std::string const& interface_str) {
@@ -586,6 +586,12 @@ class DMatrix {
    */
   [[nodiscard]] bool SingleColBlock() const { return this->NumBatches() == 1; }
   [[nodiscard]] virtual std::int32_t NumBatches() const { return 1; }
+  /**
+   * @return Row boundaries for batches returned by this DMatrix.
+   */
+  [[nodiscard]] virtual std::vector<bst_idx_t> BatchPtr() const {
+    return {0, this->Info().num_row_};
+  }
 
   virtual ~DMatrix();
 
@@ -599,11 +605,9 @@ class DMatrix {
    *
    * @param uri The URI of input.
    * @param silent Whether print information during loading.
-   * @param data_split_mode Indicate how the data was split beforehand.
    * @return The created DMatrix.
    */
-  static DMatrix* Load(const std::string& uri, bool silent = true,
-                       DataSplitMode data_split_mode = DataSplitMode::kRow);
+  static DMatrix* Load(const std::string& uri, bool silent = true);
 
   /**
    * @brief Creates a new DMatrix from an external data adapter.
@@ -613,14 +617,12 @@ class DMatrix {
    * @param           missing         Values to count as missing.
    * @param           nthread         Number of threads for construction.
    * @param           cache_prefix    (Optional) The cache prefix for external memory.
-   * @param           data_split_mode (Optional) Data split mode.
    *
    * @return  a Created DMatrix.
    */
   template <typename AdapterT>
   static DMatrix* Create(AdapterT* adapter, float missing, int nthread,
-                         const std::string& cache_prefix = "",
-                         DataSplitMode data_split_mode = DataSplitMode::kRow);
+                         const std::string& cache_prefix = "");
 
   /**
    * @brief Create a new Quantile based DMatrix used for histogram based algorithm.
@@ -645,7 +647,7 @@ class DMatrix {
             typename XGDMatrixCallbackNext>
   static DMatrix* Create(DataIterHandle iter, DMatrixHandle proxy, std::shared_ptr<DMatrix> ref,
                          DataIterResetCallback* reset, XGDMatrixCallbackNext* next, float missing,
-                         std::int32_t nthread, bst_bin_t max_bin, std::int64_t max_quantile_blocks);
+                         std::int32_t nthread, bst_bin_t max_bin);
 
   /**
    * @brief Create an external memory DMatrix with callbacks.
@@ -679,19 +681,17 @@ class DMatrix {
             typename XGDMatrixCallbackNext>
   static DMatrix* Create(DataIterHandle iter, DMatrixHandle proxy, std::shared_ptr<DMatrix> ref,
                          DataIterResetCallback* reset, XGDMatrixCallbackNext* next,
-                         bst_bin_t max_bin, std::int64_t max_quantile_blocks,
-                         ExtMemConfig const& config);
+                         bst_bin_t max_bin, ExtMemConfig const& config);
 
-  virtual DMatrix *Slice(common::Span<int32_t const> ridxs) = 0;
+  virtual DMatrix* Slice(common::Span<int32_t const> ridxs) = 0;
 
   /**
-   * @brief Slice a DMatrix by columns.
-   *
-   * @param num_slices Total number of slices
-   * @param slice_id Index of the current slice
-   * @return DMatrix containing the slice of columns
+   * @brief Accessor for the string representation of the categories.
    */
-  virtual DMatrix *SliceCol(int num_slices, int slice_id) = 0;
+  [[nodiscard]] CatContainer const* Cats() const { return this->CatsShared().get(); }
+  [[nodiscard]] std::shared_ptr<CatContainer const> CatsShared() const {
+    return this->Info().CatsShared();
+  }
 
  protected:
   virtual BatchSet<SparsePage> GetRowBatches() = 0;
@@ -757,8 +757,6 @@ inline BatchSet<ExtSparsePage> DMatrix::GetBatches(Context const* ctx, BatchPara
   return GetExtBatches(ctx, param);
 }
 }  // namespace xgboost
-
-DECLARE_FIELD_ENUM_CLASS(xgboost::DataSplitMode);
 
 namespace dmlc {
 DMLC_DECLARE_TRAITS(is_pod, xgboost::Entry, true);

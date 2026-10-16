@@ -3,8 +3,6 @@ from dataclasses import asdict
 
 import numpy as np
 import pytest
-from loky import get_reusable_executor
-
 import xgboost as xgb
 from xgboost import RabitTracker, build_info, federated
 from xgboost import testing as tm
@@ -25,10 +23,13 @@ def run_rabit_worker(rabit_env: dict, world_size: int) -> int:
 
 @pytest.mark.skipif(**tm.no_loky())
 def test_rabit_communicator() -> None:
+    from loky import get_reusable_executor
+
     world_size = 2
     tracker = RabitTracker(host_ip="127.0.0.1", n_workers=world_size)
     tracker.start()
     workers = []
+
     with get_reusable_executor(max_workers=world_size) as pool:
         for _ in range(world_size):
             worker = pool.submit(
@@ -60,6 +61,8 @@ def run_federated_worker(port: int, world_size: int, rank: int) -> int:
 @pytest.mark.skipif(**tm.skip_win())
 @pytest.mark.skipif(**tm.no_loky())
 def test_federated_communicator() -> None:
+    from loky import get_reusable_executor
+
     if not build_info()["USE_FEDERATED"]:
         pytest.skip("XGBoost not built with federated learning enabled")
 
@@ -79,6 +82,18 @@ def test_federated_communicator() -> None:
             workers.append(worker)
         for worker in workers:
             assert worker.result() == 0
+
+
+@pytest.mark.skipif(
+    build_info()["USE_FEDERATED"],
+    reason="XGBoost is built with federated learning enabled",
+)
+def test_federated_tracker_without_plugin() -> None:
+    with pytest.raises(
+        xgb.core.XGBoostError,
+        match="XGBoost is not compiled with federated learning support",
+    ):
+        federated.run_federated_server(n_workers=1, port=0, blocking=False)
 
 
 def test_config_serialization() -> None:

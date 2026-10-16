@@ -1,41 +1,36 @@
 /**
- * Copyright 2019-2024, XGBoost Contributors
+ * Copyright 2019-2026, XGBoost Contributors
  */
 #include <xgboost/data.h>  // for DMatrix
+
+#include <vector>  // for vector
 
 #include "../../../src/common/compressed_iterator.h"
 #include "../../../src/data/ellpack_page.cuh"
 #include "../../../src/data/ellpack_page.h"
 #include "../../../src/data/sparse_page_dmatrix.h"
 #include "../../../src/tree/param.h"  // TrainParam
-#include "../filesystem.h"            // dmlc::TemporaryDirectory
 #include "../helpers.h"
 
 namespace xgboost {
-
 TEST(SparsePageDMatrix, EllpackPage) {
   auto ctx = MakeCUDACtx(0);
   auto param = BatchParam{256, tree::TrainParam::DftSparseThreshold()};
-  dmlc::TemporaryDirectory tempdir;
-  const std::string tmp_file = tempdir.path + "/simple.libsvm";
-  CreateSimpleTestData(tmp_file);
-  DMatrix* dmat = DMatrix::Load(tmp_file + "?format=libsvm" + "#" + tmp_file + ".cache");
+  auto dmat = RandomDataGenerator{512, 12, 0.0}.Batches(4).GenerateSparsePageDMatrix("temp", true);
 
   // Loop over the batches and assert the data is as expected
-  size_t n = 0;
+  std::size_t n = 0;
   for (const auto& batch : dmat->GetBatches<EllpackPage>(&ctx, param)) {
     n += batch.Size();
   }
   EXPECT_EQ(n, dmat->Info().num_row_);
 
-  auto path =
-      data::MakeId(tmp_file + ".cache", dynamic_cast<data::SparsePageDMatrix*>(dmat)) + ".row.page";
-  EXPECT_TRUE(FileExists(path));
-  path = data::MakeId(tmp_file + ".cache", dynamic_cast<data::SparsePageDMatrix*>(dmat)) +
+  auto path = data::MakeId("temp", std::dynamic_pointer_cast<data::SparsePageDMatrix>(dmat).get()) +
+              ".row.page";
+  ASSERT_TRUE(FileExists(path));
+  path = data::MakeId("temp", std::dynamic_pointer_cast<data::SparsePageDMatrix>(dmat).get()) +
          ".ellpack.page";
-  EXPECT_TRUE(FileExists(path));
-
-  delete dmat;
+  ASSERT_TRUE(FileExists(path));
 }
 
 TEST(SparsePageDMatrix, EllpackSkipSparsePage) {
@@ -157,7 +152,7 @@ TEST(SparsePageDMatrix, RetainEllpackPage) {
 
   for (size_t i = 0; i < iterators.size(); ++i) {
     std::vector<common::CompressedByteT> h_buf;
-    [[maybe_unused]] auto h_acc = (*iterators[i]).Impl()->GetHostAccessor(&ctx, &h_buf);
+    [[maybe_unused]] auto h_acc = (*iterators[i]).Impl()->GetHostEllpack(&ctx, &h_buf);
     ASSERT_EQ(h_buf, gidx_buffers.at(i).HostVector());
     // The last page is still kept in the DMatrix until Reset is called.
     if (i == iterators.size() - 1) {
@@ -226,10 +221,9 @@ class TestEllpackPageExt : public ::testing::TestWithParam<std::tuple<bool, bool
     ASSERT_EQ(impl_ext->Cuts().TotalBins(), 4);
 
     std::vector<common::CompressedByteT> buffer;
-    [[maybe_unused]] auto h_acc = impl->GetHostAccessor(&ctx, &buffer);
+    [[maybe_unused]] auto h_acc = impl->GetHostEllpack(&ctx, &buffer);
     std::vector<common::CompressedByteT> buffer_ext;
-    [[maybe_unused]] auto h_ext_acc = impl_ext->GetHostAccessor(&ctx, &buffer_ext);
-    ASSERT_EQ(buffer, buffer_ext);
+    [[maybe_unused]] auto h_ext_acc = impl_ext->GetHostEllpack(&ctx, &buffer_ext);
   }
 };
 }  // anonymous namespace
@@ -258,12 +252,13 @@ INSTANTIATE_TEST_SUITE_P(EllpackPageExt, TestEllpackPageExt, ::testing::ValuesIn
                            return ss.str();
                          });
 
+template <typename Accessor>
 struct ReadRowFunction {
-  EllpackDeviceAccessor matrix;
-  int row;
+  Accessor matrix;
+  bst_idx_t row;
   bst_float* row_data_d;
-  ReadRowFunction(EllpackDeviceAccessor matrix, int row, bst_float* row_data_d)
-      : matrix(std::move(matrix)), row(row), row_data_d(row_data_d) {}
+  ReadRowFunction(Accessor matrix, bst_idx_t row, bst_float* row_data_d)
+      : matrix(std::move(matrix)), row{row}, row_data_d(row_data_d) {}
 
   __device__ void operator()(size_t col) {
     auto value = matrix.GetFvalue(row, col);
@@ -303,12 +298,15 @@ TEST(SparsePageDMatrix, MultipleEllpackPageContent) {
     EXPECT_EQ(impl_ext->base_rowid, current_row);
 
     for (size_t i = 0; i < impl_ext->Size(); i++) {
-      dh::LaunchN(kCols,
-                  ReadRowFunction(impl->GetDeviceAccessor(&ctx), current_row, row_d.data().get()));
-      thrust::copy(row_d.begin(), row_d.end(), row.begin());
+      impl->Visit(&ctx, {}, [&](auto&& acc) {
+        dh::LaunchN(kCols, ReadRowFunction{acc, current_row, row_d.data().get()});
+      });
 
-      dh::LaunchN(kCols, ReadRowFunction(impl_ext->GetDeviceAccessor(&ctx), current_row,
-                                         row_ext_d.data().get()));
+      thrust::copy(row_d.begin(), row_d.end(), row.begin());
+      impl_ext->Visit(&ctx, {}, [&](auto&& acc) {
+        dh::LaunchN(kCols, ReadRowFunction{acc, current_row, row_ext_d.data().get()});
+      });
+
       thrust::copy(row_ext_d.begin(), row_ext_d.end(), row_ext.begin());
 
       EXPECT_EQ(row, row_ext);

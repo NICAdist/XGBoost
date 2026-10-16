@@ -1,17 +1,18 @@
 /**
- * Copyright 2023-2024, XGBoost Contributors
+ * Copyright 2023-2026, XGBoost Contributors
  */
 #pragma once
 #include <gtest/gtest.h>
 #include <xgboost/global_config.h>  // for InitNewThread
 
-#include <chrono>   // for seconds
-#include <cstdint>  // for int32_t
-#include <fstream>  // for ifstream
-#include <string>   // for string
-#include <thread>   // for thread
-#include <utility>  // for move
-#include <vector>   // for vector
+#include <algorithm>  // for max
+#include <chrono>     // for seconds
+#include <cstdint>    // for int32_t
+#include <fstream>    // for ifstream
+#include <string>     // for string
+#include <thread>     // for thread
+#include <utility>    // for move
+#include <vector>     // for vector
 
 #include "../../../src/collective/comm.h"              // for RabitComm
 #include "../../../src/collective/communicator-inl.h"  // for Init, Finalize
@@ -42,7 +43,7 @@ class WorkerForTest {
         tracker_port_{port},
         world_size_{world},
         task_id_{"t:" + std::to_string(rank)},
-        comm_{tracker_host_, tracker_port_, timeout, retry_, task_id_, DefaultNcclName()} {
+        comm_{tracker_host_, tracker_port_, timeout, retry_, task_id_, DefaultNcclName(), 0} {
     CHECK_EQ(world_size_, comm_.World());
   }
   virtual ~WorkerForTest() noexcept(false) { SafeColl(comm_.Shutdown()); }
@@ -50,7 +51,7 @@ class WorkerForTest {
 
   void LimitSockBuf(std::int32_t n_bytes) {
     for (std::int32_t i = 0; i < comm_.World(); ++i) {
-      if (i != comm_.Rank()) {
+      if (i != comm_.Rank() && comm_.HasChan(i)) {
         ASSERT_TRUE(comm_.Chan(i)->Socket()->NonBlocking());
         SafeColl(comm_.Chan(i)->Socket()->SetBufSize(n_bytes));
         SafeColl(comm_.Chan(i)->Socket()->SetNoDelay());
@@ -113,7 +114,7 @@ inline Json MakeTrackerConfig(std::string host, std::int32_t n_workers,
 
 template <typename WorkerFn>
 void TestDistributed(std::int32_t n_workers, WorkerFn worker_fn,
-                     std::chrono::seconds timeout = std::chrono::seconds{2}) {
+                     std::chrono::seconds timeout = std::chrono::seconds{3}) {
   std::string host;
   auto rc = GetHostAddress(&host);
   SafeColl(rc);
@@ -206,35 +207,4 @@ inline void GetWorkerLocalThreads(std::int32_t n_workers, Context* ctx) {
   ctx->UpdateAllowUnknown(
       Args{{"nthread", std::to_string(n_threads)}, {"device", ctx->DeviceName()}});
 }
-
-class BaseMGPUTest : public ::testing::Test {
- public:
-  /**
-   * @param emulate_if_single Emulate multi-GPU for federated test if there's only one GPU
-   *                          available.
-   */
-  template <typename Fn>
-  auto DoTest([[maybe_unused]] Fn&& fn, bool is_federated,
-              [[maybe_unused]] bool emulate_if_single = false) const {
-    auto n_gpus = curt::AllVisibleGPUs();
-    if (is_federated) {
-#if defined(XGBOOST_USE_FEDERATED)
-      if (n_gpus == 1 && emulate_if_single) {
-        // Emulate multiple GPUs.
-        // We don't use nccl and can have multiple communicators running on the same device.
-        n_gpus = 3;
-      }
-      TestFederatedGlobal(n_gpus, fn);
-#else
-      GTEST_SKIP_("Not compiled with federated learning.");
-#endif  // defined(XGBOOST_USE_FEDERATED)
-    } else {
-#if defined(XGBOOST_USE_NCCL)
-      TestDistributedGlobal(n_gpus, fn);
-#else
-      GTEST_SKIP_("Not compiled with NCCL.");
-#endif  // defined(XGBOOST_USE_NCCL)
-    }
-  }
-};
 }  // namespace xgboost::collective

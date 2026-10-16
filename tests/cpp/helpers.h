@@ -1,5 +1,5 @@
 /**
- * Copyright 2016-2024, XGBoost contributors
+ * Copyright 2016-2025, XGBoost contributors
  */
 #pragma once
 
@@ -22,13 +22,13 @@
 #if defined(__CUDACC__)
 #include "../../src/collective/communicator-inl.h"  // for GetRank
 #include "../../src/common/cuda_rt_utils.h"         // for AllVisibleGPUs
-#endif  // defined(__CUDACC__)
+#endif                                              // defined(__CUDACC__)
 
-#include "filesystem.h"  // dmlc::TemporaryDirectory
+#include "filesystem.h"  // for TemporaryDirectory
 #include "xgboost/linalg.h"
 
 #if defined(__CUDACC__)
-#define DeclareUnifiedTest(name) GPU ## name
+#define DeclareUnifiedTest(name) GPU##name
 #else
 #define DeclareUnifiedTest(name) name
 #endif
@@ -40,7 +40,7 @@
 #endif
 
 #if defined(__CUDACC__)
-#define DeclareUnifiedDistributedTest(name) MGPU ## name
+#define DeclareUnifiedDistributedTest(name) MGPU##name
 #else
 #define DeclareUnifiedDistributedTest(name) name
 #endif
@@ -50,12 +50,24 @@ class ObjFunction;
 class Metric;
 struct LearnerModelParam;
 class GradientBooster;
-}
+}  // namespace xgboost
 
 template <typename Float>
 Float RelError(Float l, Float r) {
   static_assert(std::is_floating_point_v<Float>);
   return std::abs(1.0f - l / r);
+}
+
+template <typename T, typename V = std::remove_cv_t<T>>
+void AssertVecEq(std::vector<T> h_vec, std::vector<V> const& exp, float atol = 1e-5) {
+  ASSERT_EQ(h_vec.size(), exp.size());
+  for (std::size_t i = 0; i < h_vec.size(); ++i) {
+    if constexpr (std::is_floating_point_v<V>) {
+      ASSERT_NEAR(h_vec[i], exp[i], atol) << "i:" << i;
+    } else {
+      ASSERT_EQ(h_vec[i], exp[i]);
+    }
+  }
 }
 
 bool FileExists(const std::string& filename);
@@ -69,20 +81,16 @@ void CreateBigTestData(const std::string& filename, size_t n_entries, bool zero_
 void CreateTestCSV(std::string const& path, size_t rows, size_t cols);
 
 void CheckObjFunction(std::unique_ptr<xgboost::ObjFunction> const& obj,
-                      std::vector<xgboost::bst_float> preds,
-                      std::vector<xgboost::bst_float> labels,
+                      std::vector<xgboost::bst_float> preds, std::vector<xgboost::bst_float> labels,
                       std::vector<xgboost::bst_float> weights,
                       std::vector<xgboost::bst_float> out_grad,
                       std::vector<xgboost::bst_float> out_hess);
 
-xgboost::Json CheckConfigReloadImpl(xgboost::Configurable* const configurable,
-                                    std::string name);
+xgboost::Json CheckConfigReloadImpl(xgboost::Configurable* const configurable, std::string name);
 
 template <typename T>
-xgboost::Json CheckConfigReload(std::unique_ptr<T> const& configurable,
-                                std::string name = "") {
-  return CheckConfigReloadImpl(dynamic_cast<xgboost::Configurable*>(configurable.get()),
-                               name);
+xgboost::Json CheckConfigReload(std::unique_ptr<T> const& configurable, std::string name = "") {
+  return CheckConfigReloadImpl(dynamic_cast<xgboost::Configurable*>(configurable.get()), name);
 }
 
 void CheckRankingObjFunction(std::unique_ptr<xgboost::ObjFunction> const& obj,
@@ -94,23 +102,19 @@ void CheckRankingObjFunction(std::unique_ptr<xgboost::ObjFunction> const& obj,
                              std::vector<xgboost::bst_float> out_hess);
 
 xgboost::bst_float GetMetricEval(
-  xgboost::Metric * metric,
-  xgboost::HostDeviceVector<xgboost::bst_float> const& preds,
-  std::vector<xgboost::bst_float> labels,
-  std::vector<xgboost::bst_float> weights = std::vector<xgboost::bst_float>(),
-  std::vector<xgboost::bst_uint> groups = std::vector<xgboost::bst_uint>(),
-  xgboost::DataSplitMode data_split_Mode = xgboost::DataSplitMode::kRow);
+    xgboost::Metric* metric, xgboost::HostDeviceVector<xgboost::bst_float> const& preds,
+    std::vector<xgboost::bst_float> labels,
+    std::vector<xgboost::bst_float> weights = std::vector<xgboost::bst_float>(),
+    std::vector<xgboost::bst_uint> groups = std::vector<xgboost::bst_uint>());
 
 double GetMultiMetricEval(xgboost::Metric* metric,
                           xgboost::HostDeviceVector<xgboost::bst_float> const& preds,
                           xgboost::linalg::Tensor<float, 2> const& labels,
                           std::vector<xgboost::bst_float> weights = {},
-                          std::vector<xgboost::bst_uint> groups = {},
-                          xgboost::DataSplitMode data_split_Mode = xgboost::DataSplitMode::kRow);
+                          std::vector<xgboost::bst_uint> groups = {});
 
 namespace xgboost {
-
-float GetBaseScore(Json const &config);
+[[nodiscard]] std::vector<float> GetBaseScore(Json const& config);
 
 /*!
  * \brief Linear congruential generator.
@@ -167,8 +171,8 @@ class SimpleRealUniformDistribution {
   template <size_t Bits, typename GeneratorT>
   ResultT GenerateCanonical(GeneratorT* rng) const {
     static_assert(std::is_floating_point_v<ResultT>, "Result type must be floating point.");
-    long double const r = (static_cast<long double>(rng->Max())
-                           - static_cast<long double>(rng->Min())) + 1.0L;
+    long double const r =
+        (static_cast<long double>(rng->Max()) - static_cast<long double>(rng->Min())) + 1.0L;
     auto const log2r = static_cast<size_t>(std::log(r) / std::log(2.0L));
     size_t m = std::max<size_t>(1UL, (Bits + log2r - 1UL) / log2r);
     ResultT sum_value = 0, r_k = 1;
@@ -183,13 +187,11 @@ class SimpleRealUniformDistribution {
   }
 
  public:
-  SimpleRealUniformDistribution(ResultT l, ResultT u) :
-      lower_{l}, upper_{u} {}
+  SimpleRealUniformDistribution(ResultT l, ResultT u) : lower_{l}, upper_{u} {}
 
   template <typename GeneratorT>
   ResultT operator()(GeneratorT* rng) const {
-    ResultT tmp = GenerateCanonical<std::numeric_limits<ResultT>::digits,
-                                    GeneratorT>(rng);
+    ResultT tmp = GenerateCanonical<std::numeric_limits<ResultT>::digits, GeneratorT>(rng);
     auto ret = (tmp * (upper_ - lower_)) + lower_;
     // Correct floating point error.
     return std::max(ret, lower_);
@@ -213,7 +215,7 @@ Json GetArrayInterface(HostDeviceVector<T> const* storage, size_t rows, size_t c
   array_interface["shape"][1] = cols;
 
   char t = linalg::detail::ArrayInterfaceHandler::TypeChar<T>();
-  array_interface["typestr"] = String(std::string{"<"} + t + std::to_string(sizeof(T)));
+  array_interface["typestr"] = String(std::string("<") + t + std::to_string(sizeof(T)));
   array_interface["version"] = 3;
   return array_interface;
 }
@@ -241,15 +243,15 @@ class RandomDataGenerator {
   bool on_host_{false};
   std::shared_ptr<DMatrix> ref_{nullptr};
   std::int64_t min_cache_page_bytes_{0};
-  std::int64_t max_num_device_pages_{1};
+  float cache_host_ratio_;
+  float hw_decomp_ratio_{true};
 
   Json ArrayInterfaceImpl(HostDeviceVector<float>* storage, size_t rows, size_t cols) const;
 
   void GenerateLabels(std::shared_ptr<DMatrix> p_fmat) const;
 
  public:
-  RandomDataGenerator(bst_idx_t rows, size_t cols, float sparsity)
-      : rows_{rows}, cols_{cols}, sparsity_{sparsity}, lcg_{seed_} {}
+  RandomDataGenerator(bst_idx_t rows, std::size_t cols, float sparsity);
 
   RandomDataGenerator& Lower(float v) {
     lower_ = v;
@@ -279,8 +281,12 @@ class RandomDataGenerator {
     this->min_cache_page_bytes_ = min_cache_page_bytes;
     return *this;
   }
-  RandomDataGenerator& MaxNumDevicePages(std::int64_t max_num_device_pages) {
-    this->max_num_device_pages_ = max_num_device_pages;
+  [[nodiscard]] RandomDataGenerator& CacheHostRatio(float cache_host_ratio) {
+    this->cache_host_ratio_ = cache_host_ratio;
+    return *this;
+  }
+  [[nodiscard]] RandomDataGenerator& HwDecompRatio(float hw_decomp_ratio) {
+    this->hw_decomp_ratio_ = hw_decomp_ratio;
     return *this;
   }
   RandomDataGenerator& Seed(uint64_t s) {
@@ -333,8 +339,7 @@ class RandomDataGenerator {
   void GenerateCSR(HostDeviceVector<float>* value, HostDeviceVector<std::size_t>* row_ptr,
                    HostDeviceVector<bst_feature_t>* columns) const;
 
-  [[nodiscard]] std::shared_ptr<DMatrix> GenerateDMatrix(
-      bool with_label = false, DataSplitMode data_split_mode = DataSplitMode::kRow) const;
+  [[nodiscard]] std::shared_ptr<DMatrix> GenerateDMatrix(bool with_label = false) const;
 
   [[nodiscard]] std::shared_ptr<DMatrix> GenerateSparsePageDMatrix(std::string prefix,
                                                                    bool with_label) const;
@@ -350,20 +355,15 @@ inline std::shared_ptr<DMatrix> EmptyDMatrix() {
   return RandomDataGenerator{0, 0, 0.0}.GenerateDMatrix();
 }
 
-inline std::vector<float> GenerateRandomCategoricalSingleColumn(int n, size_t num_categories) {
-  std::vector<float> x(n);
-  std::mt19937 rng(0);
-  std::uniform_int_distribution<size_t> dist(0, num_categories - 1);
-  std::generate(x.begin(), x.end(), [&]() { return static_cast<float>(dist(rng)); });
-  // Make sure each category is present
-  for (size_t i = 0; i < num_categories; i++) {
-    x[i] = static_cast<decltype(x)::value_type>(i);
-  }
-  return x;
-}
+[[nodiscard]] std::vector<float> GenerateRandomCategoricalSingleColumn(std::size_t n,
+                                                                       std::size_t n_categories);
 
 std::shared_ptr<DMatrix> GetDMatrixFromData(const std::vector<float>& x, std::size_t num_rows,
                                             bst_feature_t num_columns);
+
+[[nodiscard]] std::shared_ptr<DMatrix> GetExternalMemoryDMatrixFromData(
+    HostDeviceVector<float> const& x, bst_idx_t n_samples, bst_feature_t n_features,
+    const common::TemporaryDirectory& tempdir, bst_idx_t n_batches = 4);
 
 std::unique_ptr<GradientBooster> CreateTrainedGBM(std::string name, Args kwargs, size_t kRows,
                                                   size_t kCols,
@@ -395,17 +395,17 @@ inline HostDeviceVector<GradientPair> GenerateRandomGradients(const size_t n_row
   return gpair;
 }
 
-inline linalg::Matrix<GradientPair> GenerateRandomGradients(Context const* ctx, bst_idx_t n_rows,
-                                                            bst_target_t n_targets,
-                                                            float lower = 0.0f,
-                                                            float upper = 1.0f) {
+inline auto GenerateRandomGradients(Context const* ctx, bst_idx_t n_rows, bst_target_t n_targets,
+                                    float lower = 0.0f, float upper = 1.0f) {
   auto g = GenerateRandomGradients(n_rows * n_targets, lower, upper);
-  linalg::Matrix<GradientPair> gpair({n_rows, static_cast<bst_idx_t>(n_targets)}, ctx->Device());
-  gpair.Data()->Copy(g);
+  GradientContainer gpair;
+  gpair.gpair =
+      linalg::Matrix<GradientPair>{{n_rows, static_cast<bst_idx_t>(n_targets)}, ctx->Device()};
+  gpair.gpair.Data()->Copy(g);
   return gpair;
 }
 
-typedef void *DMatrixHandle;  // NOLINT(*);
+typedef void* DMatrixHandle;  // NOLINT(*);
 
 class ArrayIterForTest {
  protected:
@@ -446,6 +446,10 @@ class CudaArrayIterForTest : public ArrayIterForTest {
  public:
   explicit CudaArrayIterForTest(float sparsity, size_t rows = Rows(), size_t cols = Cols(),
                                 size_t batches = Batches());
+  explicit CudaArrayIterForTest(Context const* ctx, HostDeviceVector<float> const& data,
+                                std::size_t n_samples, bst_feature_t n_features,
+                                std::size_t n_batches)
+      : ArrayIterForTest{ctx, data, n_samples, n_features, n_batches} {};
   int Next() override;
   ~CudaArrayIterForTest() override = default;
 };
@@ -462,19 +466,14 @@ class NumpyArrayIterForTest : public ArrayIterForTest {
   ~NumpyArrayIterForTest() override = default;
 };
 
-void DMatrixToCSR(DMatrix *dmat, std::vector<float> *p_data,
-                  std::vector<size_t> *p_row_ptr,
-                  std::vector<bst_feature_t> *p_cids);
+void DMatrixToCSR(DMatrix* dmat, std::vector<float>* p_data, std::vector<size_t>* p_row_ptr,
+                  std::vector<bst_feature_t>* p_cids);
 
-typedef void *DataIterHandle;  // NOLINT(*)
+typedef void* DataIterHandle;  // NOLINT(*)
 
-inline void Reset(DataIterHandle self) {
-  static_cast<ArrayIterForTest*>(self)->Reset();
-}
+inline void Reset(DataIterHandle self) { static_cast<ArrayIterForTest*>(self)->Reset(); }
 
-inline int Next(DataIterHandle self) {
-  return static_cast<ArrayIterForTest*>(self)->Next();
-}
+inline int Next(DataIterHandle self) { return static_cast<ArrayIterForTest*>(self)->Next(); }
 
 /**
  * @brief Create an array interface for host vector.
@@ -487,7 +486,7 @@ char const* Make1dInterfaceTest(T const* vec, std::size_t len) {
 }
 
 class RMMAllocator;
-using RMMAllocatorPtr = std::unique_ptr<RMMAllocator, void(*)(RMMAllocator*)>;
+using RMMAllocatorPtr = std::unique_ptr<RMMAllocator, void (*)(RMMAllocator*)>;
 RMMAllocatorPtr SetUpRMMResourceForCppTests(int argc, char** argv);
 
 /*

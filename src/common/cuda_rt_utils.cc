@@ -1,10 +1,20 @@
 /**
- * Copyright 2015-2025, XGBoost Contributors
+ * Copyright 2015-2026, XGBoost Contributors
  */
 #include "cuda_rt_utils.h"
 
+#include <cstring>  // for memcpy
+#include <set>      // for set
+#include <sstream>  // for stringstream
+
+#include "cuda_stream.h"   // for StreamRef
+#include "xgboost/span.h"  // for Span
+
 #if defined(XGBOOST_USE_CUDA)
 #include <cuda_runtime_api.h>
+
+#include <algorithm>  // for max
+
 #endif  // defined(XGBOOST_USE_CUDA)
 
 #include <cstddef>  // for size_t
@@ -40,29 +50,17 @@ std::int32_t CurrentDevice(bool raise) {
 }
 
 // alternatively: `nvidia-smi -q | grep Addressing`
-bool SupportsPageableMem() {
+[[nodiscard]] bool SupportsPageableMem() {
   std::int32_t res{0};
   dh::safe_cuda(cudaDeviceGetAttribute(&res, cudaDevAttrPageableMemoryAccess, CurrentDevice()));
   return res == 1;
 }
 
-bool SupportsAts() {
+[[nodiscard]] bool SupportsAts() {
   std::int32_t res{0};
   dh::safe_cuda(cudaDeviceGetAttribute(&res, cudaDevAttrPageableMemoryAccessUsesHostPageTables,
                                        CurrentDevice()));
   return res == 1;
-}
-
-void CheckComputeCapability() {
-  for (std::int32_t d_idx = 0; d_idx < AllVisibleGPUs(); ++d_idx) {
-    cudaDeviceProp prop;
-    dh::safe_cuda(cudaGetDeviceProperties(&prop, d_idx));
-    std::ostringstream oss;
-    oss << "CUDA Capability Major/Minor version number: " << prop.major << "." << prop.minor
-        << " is insufficient.  Need >=3.5";
-    int failed = prop.major < 3 || (prop.major == 3 && prop.minor < 5);
-    if (failed) LOG(WARNING) << oss.str() << " for device: " << d_idx;
-  }
 }
 
 void SetDevice(std::int32_t device) {
@@ -93,13 +91,58 @@ void GetVersionImpl(Fn&& fn, std::int32_t* major, std::int32_t* minor) {
 }
 }  // namespace
 
-void RtVersion(std::int32_t* major, std::int32_t* minor) {
+void GetRtVersionGlobal(std::int32_t* major, std::int32_t* minor) {
   GetVersionImpl([](std::int32_t* ver) { dh::safe_cuda(cudaRuntimeGetVersion(ver)); }, major,
                  minor);
 }
 
-void DrVersion(std::int32_t* major, std::int32_t* minor) {
+void GetDrVersionGlobal(std::int32_t* major, std::int32_t* minor) {
   GetVersionImpl([](std::int32_t* ver) { dh::safe_cuda(cudaDriverGetVersion(ver)); }, major, minor);
+}
+
+[[nodiscard]] std::int32_t GetNumaId() {
+  std::int32_t numa_id = -1;
+  dh::safe_cuda(cudaDeviceGetAttribute(&numa_id, cudaDevAttrHostNumaId, curt::CurrentDevice()));
+  numa_id = std::max(numa_id, 0);
+  return numa_id;
+}
+
+[[nodiscard]] std::int32_t GetMpCnt(std::int32_t device) {
+  std::int32_t n_mps = 0;
+  dh::safe_cuda(cudaDeviceGetAttribute(&n_mps, cudaDevAttrMultiProcessorCount, device));
+  CHECK_GT(n_mps, 0);
+  return n_mps;
+}
+
+[[nodiscard]] bool MemoryPoolsSupported(std::int32_t device) {
+  std::int32_t res = 0;
+  dh::safe_cuda(cudaDeviceGetAttribute(&res, cudaDevAttrMemoryPoolsSupported, device));
+  return !!res;
+}
+
+static_assert(kUuidLength == sizeof(std::declval<cudaDeviceProp>().uuid));
+
+void GetUuid(xgboost::common::Span<unsigned char> uuid, std::int32_t device) {
+  cudaDeviceProp prop{};
+  dh::safe_cuda(cudaGetDeviceProperties(&prop, device));
+  std::memcpy(uuid.data(), static_cast<void*>(&(prop.uuid)), kUuidLength);
+}
+
+[[nodiscard]] std::string PrintUuid(common::Span<unsigned char const, kUuidLength> uuid) {
+  std::set<std::size_t> dash_pos{0, 4, 6, 8, 10};
+  std::stringstream ss;
+  ss << "GPU";
+  for (std::size_t i = 0; i < kUuidLength; ++i) {
+    if (dash_pos.find(i) != dash_pos.cend()) {
+      ss << "-";
+    }
+    ss << std::setw(2) << std::setfill('0') << std::hex << (0xFF & std::uint32_t{uuid[i]});
+  }
+  return ss.str();
+}
+
+void MemcpyAsync(void* dst, const void* src, std::size_t count, StreamRef stream) {
+  dh::safe_cuda(cudaMemcpyAsync(dst, src, count, cudaMemcpyDefault, stream));
 }
 
 #else
@@ -125,5 +168,24 @@ void SetDevice(std::int32_t device) {
     common::AssertGPUSupport();
   }
 }
+
+[[nodiscard]] std::int32_t GetNumaId() {
+  common::AssertGPUSupport();
+  return 0;
+}
+
+[[nodiscard]] std::int32_t GetMpCnt(std::int32_t) {
+  common::AssertGPUSupport();
+  return 0;
+}
+
+[[nodiscard]] bool MemoryPoolsSupported(std::int32_t) { return false; }
+
+void GetUuid(xgboost::common::Span<unsigned char>, std::int32_t) { common::AssertGPUSupport(); }
+
+[[nodiscard]] std::string PrintUuid(common::Span<unsigned char const, kUuidLength>) { return {}; }
+
+void MemcpyAsync(void*, const void*, std::size_t, StreamRef) { common::AssertGPUSupport(); }
+
 #endif  // !defined(XGBOOST_USE_CUDA)
 }  // namespace xgboost::curt

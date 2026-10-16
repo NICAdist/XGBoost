@@ -1,10 +1,11 @@
 /**
- * Copyright 2019-2024, XGBoost Contributors
+ * Copyright 2019-2026, XGBoost Contributors
  */
 #ifndef XGBOOST_JSON_IO_H_
 #define XGBOOST_JSON_IO_H_
-#include <dmlc/endian.h>
+
 #include <xgboost/base.h>
+#include <xgboost/byteswap.h>  // for ByteSwap
 #include <xgboost/json.h>
 
 #include <cstdint>  // for int8_t
@@ -68,7 +69,9 @@ class JsonReader {
    */
   Char GetConsecutiveChar(char expected_char) {
     Char result = GetNextChar();
-    if (XGBOOST_EXPECT(result != expected_char, false)) { Expect(expected_char, result); }
+    if (XGBOOST_EXPECT(result != expected_char, false)) {
+      Expect(expected_char, result);
+    }
     return result;
   }
 
@@ -96,11 +99,18 @@ class JsonReader {
   virtual Json ParseBoolean();
   virtual Json ParseNull();
 
+  /**
+   * @brief Parse a JSON string literal into a plain std::string.
+   *
+   * Shared by ParseString and ParseObject (for keys), so object keys do not
+   * pay for a heap-allocated Json wrapper that is immediately unwrapped.
+   */
+  std::string ParseStringLiteral();
+
   Json Parse();
 
  public:
-  explicit JsonReader(StringView str) :
-      raw_str_{str} {}
+  explicit JsonReader(StringView str) : raw_str_{str} {}
 
   virtual ~JsonReader() = default;
 
@@ -137,47 +147,24 @@ class JsonWriter {
 
   virtual void Save(Json json);
 
-  virtual void Visit(JsonArray  const* arr);
-  virtual void Visit(F32Array  const* arr);
+  virtual void Visit(JsonArray const* arr);
+  virtual void Visit(F32Array const* arr);
   virtual void Visit(F64Array const*) { LOG(FATAL) << "Only UBJSON format can handle f64 array."; }
-  virtual void Visit(I8Array  const* arr);
+  virtual void Visit(I8Array const* arr);
   virtual void Visit(U8Array const* arr);
   virtual void Visit(I16Array const* arr);
-  virtual void Visit(I32Array  const* arr);
-  virtual void Visit(I64Array  const* arr);
+  virtual void Visit(U16Array const* arr);
+  virtual void Visit(I32Array const* arr);
+  virtual void Visit(U32Array const* arr);
+  virtual void Visit(I64Array const* arr);
+  virtual void Visit(U64Array const* arr);
   virtual void Visit(JsonObject const* obj);
   virtual void Visit(JsonNumber const* num);
   virtual void Visit(JsonInteger const* num);
-  virtual void Visit(JsonNull   const* null);
+  virtual void Visit(JsonNull const* null);
   virtual void Visit(JsonString const* str);
   virtual void Visit(JsonBoolean const* boolean);
 };
-
-#if defined(__GLIBC__)
-template <typename T>
-T BuiltinBSwap(T v);
-
-template <>
-inline uint16_t BuiltinBSwap(uint16_t v) {
-  return __builtin_bswap16(v);
-}
-
-template <>
-inline uint32_t BuiltinBSwap(uint32_t v) {
-  return __builtin_bswap32(v);
-}
-
-template <>
-inline uint64_t BuiltinBSwap(uint64_t v) {
-  return __builtin_bswap64(v);
-}
-#else
-template <typename T>
-T BuiltinBSwap(T v) {
-  dmlc::ByteSwap(&v, sizeof(v), 1);
-  return v;
-}
-#endif  //  defined(__GLIBC__)
 
 template <typename T, std::enable_if_t<sizeof(T) == 1>* = nullptr>
 inline T ToBigEndian(T v) {
@@ -191,7 +178,7 @@ inline T ToBigEndian(T v) {
   auto constexpr kS = sizeof(T);
   std::conditional_t<kS == 2, uint16_t, std::conditional_t<kS == 4, uint32_t, uint64_t>> u;
   std::memcpy(&u, &v, sizeof(u));
-  u = BuiltinBSwap(u);
+  u = ByteSwap(u);
   std::memcpy(&v, &u, sizeof(u));
 #endif  // DMLC_LITTLE_ENDIAN
   return v;
@@ -223,7 +210,7 @@ class UBJReader : public JsonReader {
   auto ParseTypedArray(std::int64_t n) {
     TypedArray results{static_cast<size_t>(n)};
     for (int64_t i = 0; i < n; ++i) {
-      auto v = this->ReadPrimitive<typename TypedArray::Type>();
+      auto v = this->ReadPrimitive<typename TypedArray::value_type>();
       results.Set(i, v);
     }
     return Json{std::move(results)};
@@ -246,11 +233,14 @@ class UBJWriter : public JsonWriter {
   void Visit(JsonArray const* arr) override;
   void Visit(F32Array const* arr) override;
   void Visit(F64Array const* arr) override;
-  void Visit(I8Array  const* arr) override;
-  void Visit(U8Array  const* arr) override;
-  void Visit(I16Array  const* arr) override;
-  void Visit(I32Array  const* arr) override;
-  void Visit(I64Array  const* arr) override;
+  void Visit(I8Array const* arr) override;
+  void Visit(U8Array const* arr) override;
+  void Visit(I16Array const* arr) override;
+  void Visit(U16Array const* arr) override;
+  void Visit(I32Array const* arr) override;
+  void Visit(U32Array const* arr) override;
+  void Visit(I64Array const* arr) override;
+  void Visit(U64Array const* arr) override;
   void Visit(JsonObject const* obj) override;
   void Visit(JsonNumber const* num) override;
   void Visit(JsonInteger const* num) override;
@@ -262,6 +252,6 @@ class UBJWriter : public JsonWriter {
   using JsonWriter::JsonWriter;
   void Save(Json json) override;
 };
-}      // namespace xgboost
+}  // namespace xgboost
 
 #endif  // XGBOOST_JSON_IO_H_

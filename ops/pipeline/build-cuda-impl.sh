@@ -11,12 +11,11 @@ else
   cmake_args=''
 fi
 
-if [[ "${USE_RMM:-}" == 1 ]]
+cmake_prefix_path=''
+if [[ "${USE_RMM:-0}" == 1 ]]
 then
-  cmake_prefix_path='/opt/grpc;/opt/rmm;/opt/rmm/lib64/rapids/cmake'
+  cmake_prefix_path='/opt/rmm;/opt/rmm/lib64/rapids/cmake'
   cmake_args="${cmake_args} -DPLUGIN_RMM=ON"
-else
-  cmake_prefix_path='/opt/grpc'
 fi
 
 # Disable CMAKE_COMPILE_WARNING_AS_ERROR option temporarily until
@@ -27,19 +26,19 @@ pushd build
 cmake .. \
   -GNinja \
   -DCMAKE_PREFIX_PATH="${cmake_prefix_path}" \
+  -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+  -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+  -DCMAKE_CUDA_COMPILER_LAUNCHER=sccache \
   -DUSE_CUDA=ON \
   -DUSE_OPENMP=ON \
   -DHIDE_CXX_SYMBOLS=ON \
-  -DPLUGIN_FEDERATED=ON \
   -DUSE_NCCL=ON \
-  -DUSE_NCCL_LIB_PATH=ON \
   -DNCCL_INCLUDE_DIR=/usr/include \
   -DUSE_DLOPEN_NCCL=ON \
   -DGOOGLE_TEST=ON \
   -DUSE_DMLC_GTEST=ON \
   -DENABLE_ALL_WARNINGS=ON \
   -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF \
-  -DBUILD_DEPRECATED_CLI=ON \
   ${cmake_args}
 time ninja -v
 popd

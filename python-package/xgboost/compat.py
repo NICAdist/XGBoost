@@ -1,23 +1,25 @@
-# pylint: disable=invalid-name,unused-import
+# pylint: disable=unused-import
 """For compatibility and optional dependencies."""
+
 import functools
 import importlib.util
 import logging
-import sys
 import types
-from typing import Any, Sequence, cast
+from typing import TYPE_CHECKING, Any, Sequence, TypeGuard, cast
 
 import numpy as np
 
-from ._typing import _T
+from ._typing import _T, DataType
 
-assert sys.version_info[0] == 3, "Python 2 is no longer supported."
+if TYPE_CHECKING:
+    import pandas as pd
+    import pyarrow as pa
 
 
 def py_str(x: bytes | None) -> str:
     """convert c string back to python string"""
     assert x is not None  # ctypes might return None
-    return x.decode("utf-8")  # type: ignore
+    return x.decode("utf-8")  # type: ignore[union-attr]
 
 
 def lazy_isinstance(instance: Any, module: str, name: str) -> bool:
@@ -31,28 +33,13 @@ def lazy_isinstance(instance: Any, module: str, name: str) -> bool:
     return is_same_module and has_same_name
 
 
-# pandas
-try:
-    from pandas import DataFrame, Series
-
-    PANDAS_INSTALLED = True
-except ImportError:
-    DataFrame = object
-    Series = object
-    PANDAS_INSTALLED = False
-
-
 # sklearn
 try:
     from sklearn import __version__ as _sklearn_version
     from sklearn.base import BaseEstimator as XGBModelBase
     from sklearn.base import ClassifierMixin as XGBClassifierBase
     from sklearn.base import RegressorMixin as XGBRegressorBase
-
-    try:
-        from sklearn.model_selection import StratifiedKFold as XGBStratifiedKFold
-    except ImportError:
-        from sklearn.cross_validation import StratifiedKFold as XGBStratifiedKFold
+    from sklearn.model_selection import StratifiedKFold as XGBStratifiedKFold
 
     # sklearn.utils Tags types can be imported unconditionally once
     # xgboost's minimum scikit-learn version is 1.6 or higher
@@ -140,6 +127,14 @@ def import_pyarrow() -> types.ModuleType:
 
 
 @functools.cache
+def import_pandas() -> types.ModuleType:
+    """Import pandas with memory cache."""
+    import pandas as pd
+
+    return pd
+
+
+@functools.cache
 def import_polars() -> types.ModuleType:
     """Import polars with memory cache."""
     import polars as pl
@@ -147,19 +142,111 @@ def import_polars() -> types.ModuleType:
     return pl
 
 
+@functools.cache
+def is_pandas_available() -> bool:
+    """Check the pandas package is available or not."""
+    if importlib.util.find_spec("pandas") is None:
+        return False
+    return True
+
+
 try:
     import scipy.sparse as scipy_sparse
-    from scipy.sparse import csr_matrix as scipy_csr
 except ImportError:
     scipy_sparse = False
-    scipy_csr = object
+
+
+def _is_polars_lazyframe(data: DataType) -> bool:
+    return lazy_isinstance(data, "polars.lazyframe.frame", "LazyFrame")
+
+
+def _is_polars_series(data: DataType) -> bool:
+    return lazy_isinstance(data, "polars.series.series", "Series")
+
+
+def _is_polars(data: DataType) -> bool:
+    lf = _is_polars_lazyframe(data)
+    df = lazy_isinstance(data, "polars.dataframe.frame", "DataFrame")
+    return lf or df
+
+
+def _is_arrow(data: DataType) -> TypeGuard["pa.Table"]:
+    return lazy_isinstance(data, "pyarrow.lib", "Table")
+
+
+def _is_cudf_df(data: DataType) -> bool:
+    return lazy_isinstance(data, "cudf.core.dataframe", "DataFrame")
+
+
+def _is_cudf_ser(data: DataType) -> bool:
+    return lazy_isinstance(data, "cudf.core.series", "Series")
+
+
+def _is_cudf_pandas(data: DataType) -> bool:
+    """Must go before both pandas and cudf checks."""
+    return (_is_pandas_df(data) or _is_pandas_series(data)) and lazy_isinstance(
+        type(data), "cudf.pandas.fast_slow_proxy", "_FastSlowProxyMeta"
+    )
+
+
+def _is_pandas_df(data: DataType) -> TypeGuard["pd.DataFrame"]:
+    return lazy_isinstance(data, "pandas.core.frame", "DataFrame") or lazy_isinstance(
+        data, "pandas", "DataFrame"
+    )
+
+
+def _is_pandas_series(data: DataType) -> TypeGuard["pd.Series"]:
+    return lazy_isinstance(data, "pandas.core.series", "Series") or lazy_isinstance(
+        data, "pandas", "Series"
+    )
+
+
+def _is_modin_df(data: DataType) -> bool:
+    return lazy_isinstance(data, "modin.pandas.dataframe", "DataFrame")
+
+
+def _is_modin_series(data: DataType) -> bool:
+    return lazy_isinstance(data, "modin.pandas.series", "Series")
+
+
+def is_dataframe(data: DataType) -> bool:
+    """Whether the input is a dataframe. Currently supported dataframes:
+
+    - pandas
+    - cudf
+    - cudf.pandas
+    - polars
+    - pyarrow
+    - modin
+
+
+    """
+    return any(
+        p(data)
+        for p in (
+            _is_polars,
+            _is_polars_series,
+            _is_arrow,
+            _is_cudf_df,
+            _is_cudf_ser,
+            _is_cudf_pandas,
+            _is_pandas_df,
+            _is_pandas_series,
+            _is_modin_df,
+            _is_modin_series,
+        )
+    )
+
+
+def _is_cupy_alike(data: DataType) -> bool:
+    return hasattr(data, "__cuda_array_interface__")
 
 
 def concat(value: Sequence[_T]) -> _T:  # pylint: disable=too-many-return-statements
     """Concatenate row-wise."""
     if isinstance(value[0], np.ndarray):
         value_arr = cast(Sequence[np.ndarray], value)
-        return np.concatenate(value_arr, axis=0)
+        return cast(_T, np.concatenate(value_arr, axis=0))
     if scipy_sparse and isinstance(value[0], scipy_sparse.csr_matrix):
         return scipy_sparse.vstack(value, format="csr")
     if scipy_sparse and isinstance(value[0], scipy_sparse.csc_matrix):
@@ -167,7 +254,7 @@ def concat(value: Sequence[_T]) -> _T:  # pylint: disable=too-many-return-statem
     if scipy_sparse and isinstance(value[0], scipy_sparse.spmatrix):
         # other sparse format will be converted to CSR.
         return scipy_sparse.vstack(value, format="csr")
-    if PANDAS_INSTALLED and isinstance(value[0], (DataFrame, Series)):
+    if _is_pandas_df(value[0]) or _is_pandas_series(value[0]):
         from pandas import concat as pd_concat
 
         return pd_concat(value, axis=0)
@@ -177,8 +264,6 @@ def concat(value: Sequence[_T]) -> _T:  # pylint: disable=too-many-return-statem
         from cudf import concat as CUDF_concat
 
         return CUDF_concat(value, axis=0)
-    from .data import _is_cupy_alike
-
     if _is_cupy_alike(value[0]):
         import cupy
 

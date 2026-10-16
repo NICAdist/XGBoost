@@ -1,5 +1,5 @@
 /**
- * Copyright 2024, XGBoost Contributors
+ * Copyright 2024-2026, XGBoost Contributors
  */
 #pragma once
 
@@ -7,6 +7,7 @@
 #include <memory>   // for shared_ptr
 #include <string>   // for string
 #include <variant>  // for variant
+#include <vector>   // for vector
 
 #include "ellpack_page_source.h"         // for EllpackPageSource, EllpackPageHostSource
 #include "gradient_index_page_source.h"  // for GradientIndexPageSource
@@ -29,11 +30,11 @@ class ExtMemQuantileDMatrix : public QuantileDMatrix {
  public:
   ExtMemQuantileDMatrix(DataIterHandle iter_handle, DMatrixHandle proxy,
                         std::shared_ptr<DMatrix> ref, DataIterResetCallback *reset,
-                        XGDMatrixCallbackNext *next, bst_bin_t max_bin,
-                        std::int64_t max_quantile_blocks, ExtMemConfig const &config);
+                        XGDMatrixCallbackNext *next, bst_bin_t max_bin, ExtMemConfig const &config);
   ~ExtMemQuantileDMatrix() override;
 
   [[nodiscard]] std::int32_t NumBatches() const override { return n_batches_; }
+  [[nodiscard]] std::vector<bst_idx_t> BatchPtr() const override { return this->batch_ptr_; }
 
  private:
   void InitFromCPU(
@@ -44,7 +45,6 @@ class ExtMemQuantileDMatrix : public QuantileDMatrix {
       Context const *ctx,
       std::shared_ptr<DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>> iter,
       DMatrixHandle proxy_handle, BatchParam const &p, std::shared_ptr<DMatrix> ref,
-      std::int64_t max_quantile_blocks,
       ExtMemConfig const &config);
 
   [[nodiscard]] BatchSet<GHistIndexMatrix> GetGradientIndexImpl();
@@ -68,6 +68,7 @@ class ExtMemQuantileDMatrix : public QuantileDMatrix {
   bool const on_host_;
   BatchParam batch_;
   bst_idx_t n_batches_{0};
+  std::vector<bst_idx_t> batch_ptr_{0};
 
   using EllpackDiskPtr = std::shared_ptr<ExtEllpackPageSource>;
   using EllpackHostPtr = std::shared_ptr<ExtEllpackPageHostSource>;

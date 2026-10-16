@@ -25,13 +25,13 @@ source ops/pipeline/get-image-tag.sh
 WHEEL_TAG="${manylinux_target}_${arch}"
 IMAGE_REPO="xgb-ci.${WHEEL_TAG}"
 IMAGE_URI="${DOCKER_REGISTRY_URL}/${IMAGE_REPO}:${IMAGE_TAG}"
-PYTHON_BIN="/opt/python/cp310-cp310/bin/python"
+PYTHON_BIN="/opt/python/cp312-cp312/bin/python"
 
 echo "--- Build binary wheel for ${WHEEL_TAG} (CPU only)"
 set -x
 
 # Patch to rename pkg to xgboost-cpu
-python3 ops/script/pypi_variants.py --use-cpu-suffix=1 --require-nccl-dep=0
+python3 ops/script/pypi_variants.py --use-suffix=cpu --require-nccl-dep=na
 python3 ops/docker_run.py \
   --image-uri "${IMAGE_URI}" \
   -- bash -c \

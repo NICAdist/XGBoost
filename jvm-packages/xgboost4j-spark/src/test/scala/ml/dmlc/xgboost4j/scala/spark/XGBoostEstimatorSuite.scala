@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2024 by Contributors
+ Copyright (c) 2024-2026 by Contributors
 
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
@@ -22,7 +22,9 @@ import java.util.Arrays
 import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.SparkException
+import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.linalg.{DenseVector, SparseVector, Vectors}
+import org.apache.spark.ml.param.ParamMap
 import org.apache.spark.ml.xgboost.SparkUtils
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.{ArrayType, DoubleType, FloatType}
@@ -30,6 +32,7 @@ import org.json4s.{DefaultFormats, Formats}
 import org.json4s.jackson.parseJson
 import org.scalatest.funsuite.AnyFunSuite
 
+import ml.dmlc.xgboost4j.{LabeledPoint => XGBLabeledPoint}
 import ml.dmlc.xgboost4j.scala.DMatrix
 import ml.dmlc.xgboost4j.scala.spark.Utils.TRAIN_NAME
 
@@ -132,16 +135,6 @@ class XGBoostEstimatorSuite extends AnyFunSuite with PerTest with TmpFolderPerSu
       Map("device" -> "cuda")).setNumWorkers(1).setNumRound(1)
       .getRuntimeParameters(true)
     assert(runtimeParams.runOnGpu)
-
-    runtimeParams = new XGBoostClassifier(
-      Map("device" -> "cpu", "tree_method" -> "gpu_hist")).setNumWorkers(1).setNumRound(1)
-      .getRuntimeParameters(true)
-    assert(runtimeParams.runOnGpu)
-
-    runtimeParams = new XGBoostClassifier(
-      Map("device" -> "cuda", "tree_method" -> "gpu_hist")).setNumWorkers(1).setNumRound(1)
-      .getRuntimeParameters(true)
-    assert(runtimeParams.runOnGpu)
   }
 
   test("missing value exception for sparse vector") {
@@ -169,6 +162,85 @@ class XGBoostEstimatorSuite extends AnyFunSuite with PerTest with TmpFolderPerSu
     classifier.setMissing(Float.NaN)
     val rdd1 = classifier.toXGBLabeledPoint(input, columnIndexes)
     rdd1.collect()
+  }
+
+  test("asXGB densifies a sparse vector to match the training representation") {
+    import Utils.MLVectorToXGBLabeledPoint
+
+    val sparse = Vectors.sparse(5, Array(1, 3), Array(2.2, 4.4))
+    val point = sparse.asXGB
+
+    assert(point.size() === 5)
+    assert(point.indices() == null)
+    assert(point.values() === Array(0.0f, 2.2f, 0.0f, 4.4f, 0.0f))
+
+    val dense = Vectors.dense(1.0, 0.0, 3.0)
+    val densePoint = dense.asXGB
+    assert(densePoint.indices() == null)
+    assert(densePoint.values() === Array(1.0f, 0.0f, 3.0f))
+
+    // Same vector in either encoding must produce the same point.
+    assert(Vectors.dense(0.0, 2.2, 0.0, 4.4, 0.0).asXGB === point)
+  }
+
+  test("asXGB agrees with the training path on sparse vectors") {
+    import Utils.MLVectorToXGBLabeledPoint
+
+    val sparse = Vectors.sparse(5, Array(1, 3), Array(2.2, 4.4))
+    val df = ss.createDataFrame(sc.parallelize(Seq((1.0, sparse)))).toDF("label", "features")
+
+    val classifier = new XGBoostClassifier().setMissing(Float.NaN)
+    val (input, columnIndexes) = classifier.preprocess(df)
+    val trainPoint = classifier.toXGBLabeledPoint(input, columnIndexes).collect()(0)
+
+    val predictPoint = sparse.asXGB
+    assert(predictPoint.indices() === trainPoint.indices())
+    assert(predictPoint.values() === trainPoint.values())
+    assert(predictPoint.size() === trainPoint.size())
+  }
+
+  Seq(Float.NaN, 0.0f).foreach { missing =>
+    test(s"transform matches training semantics for sparse vectors, missing $missing") {
+      val rng = new java.util.Random(42)
+      val size = 8
+      val rows = (0 until 40).map { i =>
+        val active = (0 until size).filter(_ => rng.nextBoolean())
+        val idx = if (active.isEmpty) Array(0) else active.toArray
+        val vals = idx.map(_ => rng.nextDouble() + 1.0)
+        (i.toDouble % 3, Vectors.sparse(size, idx, vals))
+      }
+      val sparseDf = ss.createDataFrame(sc.parallelize(rows)).toDF("label", "features")
+      val denseDf = ss.createDataFrame(sc.parallelize(
+        rows.map { case (label, v) => (label, Vectors.dense(v.toArray)) }))
+        .toDF("label", "features")
+
+      val model = new XGBoostRegressor()
+        .setNumRound(5)
+        .setNumWorkers(1)
+        .setMissing(missing)
+        .fit(denseDf)
+
+      // A sparse row and its dense equivalent must predict identically, and both must match
+      // a native per-row predict on the densified features.
+      val sparsePreds = model.transform(sparseDf).select("prediction").collect().map(_.getDouble(0))
+      val densePreds = model.transform(denseDf).select("prediction").collect().map(_.getDouble(0))
+
+      sparsePreds.zip(densePreds).zip(rows).foreach { case ((fromSparse, fromDense), (_, v)) =>
+        assert(math.abs(fromSparse - fromDense) < 1e-6,
+          s"sparse and dense encodings of $v disagree: $fromSparse vs $fromDense")
+
+        val dm = new DMatrix(
+          Iterator(new XGBLabeledPoint(0.0f, v.size, null, v.toArray.map(_.toFloat))),
+          null, missing)
+        try {
+          val native = model.nativeBooster.predict(dm)(0)(0)
+          assert(math.abs(fromSparse - native) < 1e-5,
+            s"batch transform diverged from native per-row predict for $v: $fromSparse vs $native")
+        } finally {
+          dm.delete()
+        }
+      }
+    }
   }
 
   test("missing value for dense vector no need to set missing explicitly") {
@@ -556,6 +628,109 @@ class XGBoostEstimatorSuite extends AnyFunSuite with PerTest with TmpFolderPerSu
     exception.getMessage.contains("SoftmaxMultiClassObj: label must be in [0, num_class).")
   }
 
+  test("Model trained on vector can transform on array/columnar input") {
+    val vectorDf = smallBinaryClassificationVector
+    val classifier = new XGBoostClassifier().setNumRound(2)
+
+    // The model is trained with vector as the input
+    val model = classifier.fit(vectorDf)
+
+    val columnarDf = smallBinaryClassificationColumnar
+
+    // Model is trained with vector input, it doesn't have columnar input information
+    val thrown = intercept[IllegalArgumentException] {
+      model.transform(columnarDf).collect()
+    }
+    assert(thrown.getMessage.contains("features does not exist"))
+
+    // Transform on columnar input
+    model.copy(ParamMap.empty)
+      .setFeaturesCol(Array("c1", "c2", "c3"))
+      .transform(columnarDf)
+      .collect()
+
+    // Transform on array input
+    val arrayDf = smallBinaryClassificationArray
+    model.copy(ParamMap.empty).transform(arrayDf).collect()
+  }
+
+  test("Model trained on array can transform on vector/columnar input") {
+    val arrayDf = smallBinaryClassificationArray
+    val classifier = new XGBoostClassifier().setNumRound(2)
+
+    // The model is trained with vector as the input
+    val model = classifier.fit(arrayDf)
+    val columnarDf = smallBinaryClassificationColumnar
+
+    // Model is trained with vector input, it doesn't have columnar input information
+    val thrown = intercept[IllegalArgumentException] {
+      model.transform(columnarDf).collect()
+    }
+    assert(thrown.getMessage.contains("features does not exist"))
+
+    // Transform on columnar input
+    model.copy(ParamMap.empty)
+      .setFeaturesCol(Array("c1", "c2", "c3"))
+      .transform(columnarDf)
+      .collect()
+
+    // Transform on vector input
+    val vectorDf = smallBinaryClassificationVector
+    model.copy(ParamMap.empty).transform(vectorDf).collect()
+  }
+
+  test("Model trained on columnar can transform on array/vector input") {
+    val columnarDf = smallBinaryClassificationColumnar
+    val features = Array("c1", "c2", "c3")
+    val classifier = new XGBoostClassifier().setNumRound(2).setFeaturesCol(features)
+    // The model is trained with vector as the input
+    val model = classifier.fit(columnarDf)
+
+    // Transform on vector df
+    val vectorDf = smallBinaryClassificationVector
+    model.transform(vectorDf).collect()
+
+    // Transform on array df
+    val arrayDf = smallBinaryClassificationArray
+    model.transform(arrayDf).collect()
+  }
+
+  test("Fit and transform with columnar input") {
+    val df = smallBinaryClassificationColumnar
+
+    val estimator = new XGBoostClassifier()
+      .setFeaturesCol(Array("c1", "c2", "c3"))
+      .setNumRound(1)
+
+    // without any issue
+    val model = estimator.fit(df)
+    assert(model.getFeaturesCols sameElements Array("c1", "c2", "c3"))
+
+    val transformedDF = model.transform(df)
+    assert(transformedDF.schema.names.contains("c1"))
+    assert(transformedDF.schema.names.contains("c2"))
+    assert(transformedDF.schema.names.contains("c3"))
+    assert(!transformedDF.schema.names.contains(Utils.TMP_FEATURE_ARRAY_NAME))
+  }
+
+  test("Support columnar") {
+    val df = smallBinaryClassificationColumnar
+
+    val classifier = new XGBoostClassifier().setFeaturesCol(Array("c1", "c2", "c3"))
+    assert(classifier.getFeaturesCols sameElements Array("c1", "c2", "c3"))
+
+    val (processed, _) = classifier.preprocess(df)
+    assert(!processed.schema.contains("c1"))
+    assert(!processed.schema.contains("c2"))
+    assert(!processed.schema.contains("c3"))
+
+    val matched = processed.schema(Utils.TMP_FEATURE_ARRAY_NAME).dataType match {
+      case ArrayType(FloatType, _) => true
+      case _ => false
+    }
+    assert(matched)
+  }
+
   test("Support array(float)") {
     val df = smallBinaryClassificationArray
     val matched = df.schema("features").dataType match {
@@ -646,5 +821,36 @@ class XGBoostEstimatorSuite extends AnyFunSuite with PerTest with TmpFolderPerSu
 
     // No exception
     transformedDf.collect()
+  }
+
+  test("Pipeline with columnar input for Regressor and Ranker") {
+    val df = ss.createDataFrame(sc.parallelize(Seq(
+      (0.0, 1, 2, 1.0, 2.0, 3.0),
+      (1.0, 0, 5, 1.0, 2.0, 3.0),
+      (2.0, 2, 7, 1.0, 2.0, 3.0)
+    ))).toDF("label", "group", "weight", "c1", "c2", "c3")
+
+    // XGBoostRegressor with columnar features
+    val regressor = new XGBoostRegressor()
+      .setNumRound(1)
+      .setNumWorkers(1)
+      .setFeaturesCol(Array("c1", "c2", "c3"))
+
+    val regressorPipeline = new Pipeline().setStages(Array(regressor))
+    val regressorFit = regressorPipeline.fit(df)
+    val regressorPredictions = regressorFit.transform(df)
+    assert(regressorPredictions.count() === 3)
+
+    // XGBoostRanker with columnar features (requires group column)
+    val ranker = new XGBoostRanker()
+      .setNumRound(1)
+      .setNumWorkers(1)
+      .setGroupCol("group")
+      .setFeaturesCol(Array("c1", "c2", "c3"))
+
+    val rankerPipeline = new Pipeline().setStages(Array(ranker))
+    val rankerFit = rankerPipeline.fit(df)
+    val rankerPredictions = rankerFit.transform(df)
+    assert(rankerPredictions.count() === 3)
   }
 }

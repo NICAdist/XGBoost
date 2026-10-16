@@ -1,6 +1,7 @@
 # pylint: disable=too-many-arguments, too-many-locals
-# pylint: disable=missing-class-docstring, invalid-name
+# pylint: disable=missing-class-docstring
 # pylint: disable=too-many-lines
+# pylint: disable=duplicate-code
 """
 Dask extensions for distributed training
 ----------------------------------------
@@ -52,10 +53,11 @@ Optional dask configuration
       dask.config.set({"xgboost.scheduler_address": "192.0.0.100:12345"})
 
 """
+
 import logging
 from collections import defaultdict
 from contextlib import contextmanager
-from functools import cache, partial, update_wrapper
+from functools import partial, update_wrapper
 from threading import Thread
 from typing import (
     Any,
@@ -67,6 +69,7 @@ from typing import (
     List,
     Optional,
     ParamSpec,
+    Self,
     Sequence,
     Set,
     Tuple,
@@ -85,45 +88,44 @@ from dask import bag as db
 from dask import dataframe as dd
 from dask.delayed import Delayed
 from distributed import Future
-from packaging.version import Version
-from packaging.version import parse as parse_version
 
 from .. import collective, config
+from .._data_utils import Categories
 from .._typing import FeatureNames, FeatureTypes, IterationRange
 from ..callback import TrainingCallback
 from ..collective import Config as CollConfig
 from ..collective import _Args as CollArgs
 from ..collective import _ArgVals as CollArgsVals
-from ..compat import DataFrame, lazy_isinstance
+from ..compat import _is_cudf_df, _is_cudf_ser, _is_cupy_alike
 from ..core import (
     Booster,
+    CustomObj,
     DMatrix,
     Metric,
-    Objective,
     XGBoostError,
     _check_distributed_params,
     _deprecate_positional_args,
     _expect,
 )
-from ..data import _is_cudf_ser, _is_cupy_alike
 from ..sklearn import (
     XGBClassifier,
-    XGBClassifierBase,
+    XGBClassifierMixIn,
     XGBModel,
     XGBRanker,
     XGBRankerMixIn,
-    XGBRegressorBase,
+    XGBRegressorMixIn,
     _can_use_qdm,
     _check_rf_callback,
     _cls_predict_proba,
     _objective_decorator,
+    _warn_rf_deprecated,
     _wrap_evaluation_matrices,
     xgboost_model_doc,
 )
 from ..tracker import RabitTracker
 from ..training import train as worker_train
-from .data import _create_dmatrix, _create_quantile_dmatrix, no_group_split
-from .utils import get_address_from_user, get_n_threads
+from .data import _get_dmatrices, no_group_split
+from .utils import _DASK_2024_12_1, _DASK_2025_3_0, get_address_from_user, get_n_threads
 
 _DaskCollection: TypeAlias = Union[da.Array, dd.DataFrame, dd.Series]
 _DataT: TypeAlias = Union[da.Array, dd.DataFrame]  # do not use series as predictor
@@ -171,21 +173,6 @@ __all__ = [
 
 
 LOGGER = logging.getLogger("[xgboost.dask]")
-
-
-@cache
-def _DASK_VERSION() -> Version:
-    return parse_version(dask.__version__)
-
-
-@cache
-def _DASK_2024_12_1() -> bool:
-    return _DASK_VERSION() >= parse_version("2024.12.1")
-
-
-@cache
-def _DASK_2025_3_0() -> bool:
-    return _DASK_VERSION() >= parse_version("2025.3.0")
 
 
 def _try_start_tracker(
@@ -325,12 +312,16 @@ class DaskDMatrix:
         label_lower_bound: Optional[_DaskCollection] = None,
         label_upper_bound: Optional[_DaskCollection] = None,
         feature_weights: Optional[_DaskCollection] = None,
-        enable_categorical: bool = False,
+        enable_categorical: bool = True,
     ) -> None:
         client = _get_client(client)
 
         self.feature_names = feature_names
         self.feature_types = feature_types
+        if isinstance(feature_types, Categories):
+            raise TypeError(
+                "The Dask interface can handle categories from DataFrame automatically."
+            )
         self.missing = missing if missing is not None else numpy.nan
         self.enable_categorical = enable_categorical
 
@@ -367,7 +358,7 @@ class DaskDMatrix:
             label_upper_bound=label_upper_bound,
         )
 
-    def __await__(self) -> Generator:
+    def __await__(self) -> Generator[None, None, "DaskDMatrix"]:
         return self._init.__await__()
 
     async def _map_local_data(
@@ -618,7 +609,7 @@ class DaskQuantileDMatrix(DaskDMatrix):
         label_lower_bound: Optional[_DaskCollection] = None,
         label_upper_bound: Optional[_DaskCollection] = None,
         feature_weights: Optional[_DaskCollection] = None,
-        enable_categorical: bool = False,
+        enable_categorical: bool = True,
         max_quantile_batches: Optional[int] = None,
     ) -> None:
         super().__init__(
@@ -650,12 +641,6 @@ class DaskQuantileDMatrix(DaskDMatrix):
         if self._ref is not None:
             args["ref"] = self._ref
         return args
-
-
-def _dmatrix_from_list_of_parts(is_quantile: bool, **kwargs: Any) -> DMatrix:
-    if is_quantile:
-        return _create_quantile_dmatrix(**kwargs)
-    return _create_dmatrix(**kwargs)
 
 
 async def _get_rabit_args(
@@ -695,6 +680,7 @@ async def _get_rabit_args(
         _start_tracker, n_workers, sched_addr, user_addr, coll_cfg.tracker_timeout
     )
     env = coll_cfg.get_comm_config(env)
+    assert env is not None
     return env
 
 
@@ -734,37 +720,6 @@ async def _check_workers_are_alive(
         raise RuntimeError(f"Missing required workers: {missing_workers}")
 
 
-def _get_dmatrices(
-    train_ref: dict,
-    train_id: int,
-    *refs: dict,
-    evals_id: Sequence[int],
-    evals_name: Sequence[str],
-    n_threads: int,
-) -> Tuple[DMatrix, List[Tuple[DMatrix, str]]]:
-    # Create training DMatrix
-    Xy = _dmatrix_from_list_of_parts(**train_ref, nthread=n_threads)
-    # Create evaluation DMatrices
-    evals: List[Tuple[DMatrix, str]] = []
-    for i, ref in enumerate(refs):
-        # Same DMatrix as the training
-        if evals_id[i] == train_id:
-            evals.append((Xy, evals_name[i]))
-            continue
-        if ref.get("ref", None) is not None:
-            if ref["ref"] != train_id:
-                raise ValueError(
-                    "The training DMatrix should be used as a reference to evaluation"
-                    " `QuantileDMatrix`."
-                )
-            del ref["ref"]
-            eval_Xy = _dmatrix_from_list_of_parts(**ref, nthread=n_threads, ref=Xy)
-        else:
-            eval_Xy = _dmatrix_from_list_of_parts(**ref, nthread=n_threads)
-        evals.append((eval_Xy, evals_name[i]))
-    return Xy, evals
-
-
 async def _train_async(
     *,
     client: "distributed.Client",
@@ -774,7 +729,7 @@ async def _train_async(
     dtrain: DaskDMatrix,
     num_boost_round: int,
     evals: Optional[Sequence[Tuple[DaskDMatrix, str]]],
-    obj: Optional[Objective],
+    obj: Optional[CustomObj],
     early_stopping_rounds: Optional[int],
     verbose_eval: Union[int, bool],
     xgb_model: Optional[Booster],
@@ -808,6 +763,9 @@ async def _train_async(
         local_history: TrainingCallback.EvalsLog = {}
         global_config.update({"nthread": n_threads})
 
+        if coll_cfg is not None:
+            coll_args = coll_cfg.update_worker_args(coll_args)
+
         with CommunicatorContext(**coll_args), config.config_context(**global_config):
             Xy, evals = _get_dmatrices(
                 train_ref,
@@ -816,6 +774,8 @@ async def _train_async(
                 evals_id=evals_id,
                 evals_name=evals_name,
                 n_threads=n_threads,
+                # We need the model for reference categories.
+                model=xgb_model,
             )
 
             booster = worker_train(
@@ -877,7 +837,7 @@ def train(  # pylint: disable=unused-argument
     num_boost_round: int = 10,
     *,
     evals: Optional[Sequence[Tuple[DaskDMatrix, str]]] = None,
-    obj: Optional[Objective] = None,
+    obj: Optional[CustomObj] = None,
     early_stopping_rounds: Optional[int] = None,
     xgb_model: Optional[Booster] = None,
     verbose_eval: Union[int, bool] = True,
@@ -941,7 +901,7 @@ def _maybe_dataframe(
         # In older versions of dask, the partition is actually a numpy array when input
         # is dataframe.
         index = getattr(data, "index", None)
-        if lazy_isinstance(data, "cudf.core.dataframe", "DataFrame"):
+        if _is_cudf_df(data):
             import cudf
 
             if prediction.size == 0:
@@ -951,10 +911,14 @@ def _maybe_dataframe(
                 prediction, columns=columns, dtype=numpy.float32, index=index
             )
         else:
-            if prediction.size == 0:
-                return DataFrame({}, columns=columns, dtype=numpy.float32, index=index)
+            import pandas as pd
 
-            prediction = DataFrame(
+            if prediction.size == 0:
+                return pd.DataFrame(
+                    {}, columns=columns, dtype=numpy.float32, index=index
+                )
+
+            prediction = pd.DataFrame(
                 prediction, columns=columns, dtype=numpy.float32, index=index
             )
     return prediction
@@ -1018,16 +982,14 @@ async def _direct_predict_impl(  # pylint: disable=too-many-branches
                 new_axis = list(range(len(output_shape) - 2))
             else:
                 new_axis = [i + 2 for i in range(len(output_shape) - 2)]
-        if len(output_shape) == 2:
-            # Somehow dask fail to infer output shape change for 2-dim prediction, and
-            #  `chunks = (None, output_shape[1])` doesn't work due to None is not
-            #  supported in map_blocks.
-
-            # data must be an array here as dataframe + 2-dim output predict will return
-            # a dataframe instead.
-            chunks: Optional[List[Tuple]] = list(data.chunks)
-            assert isinstance(chunks, list)
-            chunks[1] = (output_shape[1],)
+        if len(output_shape) >= 2:
+            # Dask cannot infer changed or newly introduced output dimensions.
+            # `None` is not supported for chunks in map_blocks, so use the inferred
+            # prediction shape for every non-row dimension.
+            assert isinstance(data, da.Array)
+            output_chunks: List[Tuple] = [data.chunks[0]]
+            output_chunks.extend((size,) for size in output_shape[1:])
+            chunks: Optional[List[Tuple]] = output_chunks
         else:
             chunks = None
         predictions = da.map_blocks(
@@ -1465,7 +1427,7 @@ def _set_worker_client(
         model.client = client
         yield model
     finally:
-        model.client = None  # type:ignore
+        model.client = None  # type: ignore[assignment]
 
 
 class DaskScikitLearnBase(XGBModel):
@@ -1542,7 +1504,7 @@ class DaskScikitLearnBase(XGBModel):
         iteration_range: Optional[IterationRange] = None,
     ) -> Any:
         iteration_range = self._get_iteration_range(iteration_range)
-        test_dmatrix: DaskDMatrix = await DaskDMatrix(  # type: ignore
+        test_dmatrix: DaskDMatrix = await DaskDMatrix(
             self.client,
             data=X,
             missing=self.missing,
@@ -1623,7 +1585,7 @@ class DaskScikitLearnBase(XGBModel):
 @xgboost_model_doc(
     """Implementation of the Scikit-Learn API for XGBoost.""", ["estimators", "model"]
 )
-class DaskXGBRegressor(XGBRegressorBase, DaskScikitLearnBase):
+class DaskXGBRegressor(XGBRegressorMixIn, DaskScikitLearnBase):
     """dummy doc string to workaround pylint, replaced by the decorator."""
 
     async def _fit_async(
@@ -1639,7 +1601,7 @@ class DaskXGBRegressor(XGBRegressorBase, DaskScikitLearnBase):
         verbose: Union[int, bool],
         xgb_model: Optional[Union[Booster, XGBModel]],
         feature_weights: Optional[_DaskCollection],
-    ) -> _DaskCollection:
+    ) -> Self:
         params = self.get_xgb_params()
         model, metric, params, feature_weights = self._configure_fit(
             xgb_model, params, feature_weights
@@ -1668,7 +1630,7 @@ class DaskXGBRegressor(XGBRegressorBase, DaskScikitLearnBase):
         )
 
         if callable(self.objective):
-            obj: Optional[Callable] = _objective_decorator(self.objective)
+            obj: Optional[CustomObj] = _objective_decorator(self.objective)
         else:
             obj = None
         results = await self.client.sync(
@@ -1717,7 +1679,7 @@ class DaskXGBRegressor(XGBRegressorBase, DaskScikitLearnBase):
     "Implementation of the scikit-learn API for XGBoost classification.",
     ["estimators", "model"],
 )
-class DaskXGBClassifier(XGBClassifierBase, DaskScikitLearnBase):
+class DaskXGBClassifier(XGBClassifierMixIn, DaskScikitLearnBase):
     # pylint: disable=missing-class-docstring
     async def _fit_async(
         self,
@@ -1732,7 +1694,7 @@ class DaskXGBClassifier(XGBClassifierBase, DaskScikitLearnBase):
         verbose: Union[int, bool],
         xgb_model: Optional[Union[Booster, XGBModel]],
         feature_weights: Optional[_DaskCollection],
-    ) -> "DaskXGBClassifier":
+    ) -> Self:
         params = self.get_xgb_params()
         model, metric, params, feature_weights = self._configure_fit(
             xgb_model, params, feature_weights
@@ -1761,16 +1723,41 @@ class DaskXGBClassifier(XGBClassifierBase, DaskScikitLearnBase):
         )
 
         # pylint: disable=attribute-defined-outside-init
-        if isinstance(y, da.Array):
-            self.classes_ = await self.client.compute(da.unique(y))
+        if isinstance(y, dd.Series) or (
+            isinstance(y, dd.DataFrame) and len(y.columns) == 1
+        ):
+            labels_series = y if isinstance(y, dd.Series) else y[y.columns[0]]
+            # The result is collected on the client, so avoid a distributed shuffle
+            # using only 1 output partition.
+            classes = labels_series.drop_duplicates(split_out=1)
         else:
-            self.classes_ = await self.client.compute(y.drop_duplicates())
-        if _is_cudf_ser(self.classes_):
-            self.classes_ = self.classes_.to_cupy()
-        if _is_cupy_alike(self.classes_):
-            self.classes_ = self.classes_.get()
-        self.classes_ = numpy.array(self.classes_)
-        self.n_classes_ = len(self.classes_)
+            labels = y if isinstance(y, da.Array) else y.to_dask_array()
+            if labels.ndim == 2:
+                n_columns = labels.shape[1]
+                assert isinstance(n_columns, int)
+                row_chunks = tuple(chunk * n_columns for chunk in labels.chunks[0])
+
+                def flatten(block: Any) -> Any:
+                    return block.reshape(-1)
+
+                # Use map_blocks to keep the computation lazy, so that we don't go
+                # through the data twice (shape and unique).
+                labels = da.map_blocks(
+                    flatten,
+                    labels,
+                    chunks=(row_chunks,),
+                    drop_axis=1,
+                    dtype=labels.dtype,
+                )
+            classes = da.unique(labels)
+        classes = await self.client.compute(classes)
+
+        if _is_cudf_ser(classes):
+            classes = classes.to_cupy()
+        if _is_cupy_alike(classes):
+            classes = classes.get()
+        classes = numpy.unique(numpy.asarray(classes))
+        self.n_classes_ = len(classes)
 
         if self.n_classes_ > 2:
             params["objective"] = "multi:softprob"
@@ -1779,7 +1766,7 @@ class DaskXGBClassifier(XGBClassifierBase, DaskScikitLearnBase):
             params["objective"] = "binary:logistic"
 
         if callable(self.objective):
-            obj: Optional[Callable] = _objective_decorator(self.objective)
+            obj: Optional[CustomObj] = _objective_decorator(self.objective)
         else:
             obj = None
         results = await self.client.sync(
@@ -1864,7 +1851,8 @@ class DaskXGBClassifier(XGBClassifierBase, DaskScikitLearnBase):
             iteration_range=iteration_range,
         )
 
-    predict_proba.__doc__ = XGBClassifier.predict_proba.__doc__
+    if XGBClassifier.predict_proba.__doc__ is not None:
+        predict_proba.__doc__ = XGBClassifier.predict_proba.__doc__
 
     async def _predict_async(
         self,
@@ -1890,13 +1878,17 @@ class DaskXGBClassifier(XGBClassifierBase, DaskScikitLearnBase):
         else:
             assert len(pred_probs.shape) == 2
             assert isinstance(pred_probs, da.Array)
-            # when using da.argmax directly, dask will construct a numpy based return
-            # array, which runs into error when computing GPU based prediction.
+            if self.n_classes_ != 2:
+                # when using da.argmax directly, dask will construct a numpy based return
+                # array, which runs into error when computing GPU based prediction.
 
-            def _argmax(x: Any) -> Any:
-                return x.argmax(axis=1)
+                def _argmax(x: Any) -> Any:
+                    return x.argmax(axis=1)
 
-            preds = da.map_blocks(_argmax, pred_probs, drop_axis=1)
+                preds = da.map_blocks(_argmax, pred_probs, drop_axis=1)
+            else:
+                # Multi-label classification has one binary output per target.
+                preds = (pred_probs > 0.5).astype(int)
         return preds
 
 
@@ -1929,7 +1921,7 @@ class DaskXGBRanker(XGBRankerMixIn, DaskScikitLearnBase):
     def __init__(
         self,
         *,
-        objective: str = "rank:pairwise",
+        objective: str = "rank:ndcg",
         allow_group_split: bool = False,
         coll_cfg: Optional[CollConfig] = None,
         **kwargs: Any,
@@ -1959,7 +1951,7 @@ class DaskXGBRanker(XGBRankerMixIn, DaskScikitLearnBase):
         verbose: Union[int, bool],
         xgb_model: Optional[Union[XGBModel, Booster]],
         feature_weights: Optional[_DaskCollection],
-    ) -> "DaskXGBRanker":
+    ) -> Self:
         params = self.get_xgb_params()
         model, metric, params, feature_weights = self._configure_fit(
             xgb_model, params, feature_weights
@@ -2046,8 +2038,8 @@ class DaskXGBRanker(XGBRankerMixIn, DaskScikitLearnBase):
         ) -> TypeGuard[Optional[dd.Series]]:
             if not isinstance(qid, dd.Series) and qid is not None:
                 raise TypeError(
-                    f"When `allow_group_split` is set to False, {name} is required to be"
-                    " a series."
+                    f"When `allow_group_split` is set to False, {name} is required to "
+                    "be a series."
                 )
             return True
 
@@ -2132,13 +2124,19 @@ class DaskXGBRanker(XGBRankerMixIn, DaskScikitLearnBase):
 
     # FIXME(trivialfis): arguments differ due to additional parameters like group and
     # qid.
-    fit.__doc__ = XGBRanker.fit.__doc__
+    if XGBRanker.fit.__doc__ is not None:
+        fit.__doc__ = XGBRanker.fit.__doc__
 
 
 @xgboost_model_doc(
     """Implementation of the Scikit-Learn API for XGBoost Random Forest Regressor.
 
     .. versionadded:: 1.4.0
+
+    .. deprecated:: 3.4.0
+
+        This estimator is deprecated and will be removed in a future release. See
+        :doc:`/tutorials/rf` for alternatives.
 
 """,
     ["model", "objective"],
@@ -2159,6 +2157,7 @@ class DaskXGBRFRegressor(DaskXGBRegressor):
         coll_cfg: Optional[CollConfig] = None,
         **kwargs: Any,
     ) -> None:
+        _warn_rf_deprecated("DaskXGBRFRegressor")
         super().__init__(
             learning_rate=learning_rate,
             subsample=subsample,
@@ -2202,6 +2201,11 @@ class DaskXGBRFRegressor(DaskXGBRegressor):
 
     .. versionadded:: 1.4.0
 
+    .. deprecated:: 3.4.0
+
+        This estimator is deprecated and will be removed in a future release. See
+        :doc:`/tutorials/rf` for alternatives.
+
 """,
     ["model", "objective"],
     extra_parameters="""
@@ -2221,6 +2225,7 @@ class DaskXGBRFClassifier(DaskXGBClassifier):
         coll_cfg: Optional[CollConfig] = None,
         **kwargs: Any,
     ) -> None:
+        _warn_rf_deprecated("DaskXGBRFClassifier")
         super().__init__(
             learning_rate=learning_rate,
             subsample=subsample,

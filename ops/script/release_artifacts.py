@@ -15,11 +15,11 @@ from urllib.request import urlretrieve
 
 import tqdm
 from packaging import version
+from prepare_sdist import stage as stage_cpp_src_tree
 from pypi_variants import make_pyproject
 from sh.contrib import git
-from test_utils import PY_PACKAGE
+from test_utils import PY_PACKAGE, DirectoryExcursion
 from test_utils import ROOT as root_path
-from test_utils import DirectoryExcursion
 
 # S3 bucket hosting the release artifacts
 S3_BUCKET_URL = "https://s3-us-west-2.amazonaws.com/xgboost-nightly-builds"
@@ -109,31 +109,37 @@ def make_python_sdist(
     dist_dir = outdir / "dist"
     dist_dir.mkdir(exist_ok=True)
 
-    # Build sdist for `xgboost-cpu`.
+    # Stage the C++ source tree under python-package/cpp_src/ so that the
+    # scikit-build-core sdist includes a self-contained C++ build.
+    stage_cpp_src_tree()
+
+    # Build sdist for `xgboost-cpu`, `xgboost`.
+    for suffix, nccl_dep in [("cpu", "na"), ("na", "na")]:
+        with DirectoryExcursion(ROOT):
+            make_pyproject(use_suffix=suffix, require_nccl_dep=nccl_dep)
+        with DirectoryExcursion(ROOT / "python-package"):
+            subprocess.run(["python", "-m", "build", "--sdist"], check=True)
+            pkg_name = "xgboost" if suffix == "na" else f"xgboost_{suffix}"
+            sdist_name = (
+                f"{pkg_name}-{release}{rc}{rc_ver}.tar.gz"
+                if rc
+                else f"{pkg_name}-{release}.tar.gz"
+            )
+            src = DIST / sdist_name
+            subprocess.run(["twine", "check", str(src)], check=True)
+            dest = dist_dir / sdist_name
+            shutil.move(src, dest)
+
+    # Build stub package `xgboost-cu13`.
     with DirectoryExcursion(ROOT):
-        make_pyproject(use_cpu_suffix=1, require_nccl_dep=0)
+        make_pyproject(use_suffix="cu13", require_nccl_dep="na", create_stub=True)
+
     with DirectoryExcursion(ROOT / "python-package"):
         subprocess.run(["python", "-m", "build", "--sdist"], check=True)
         sdist_name = (
-            f"xgboost_cpu-{release}{rc}{rc_ver}.tar.gz"
+            f"xgboost_cu13-{release}{rc}{rc_ver}.tar.gz"
             if rc
-            else f"xgboost_cpu-{release}.tar.gz"
-        )
-        src = DIST / sdist_name
-        subprocess.run(["twine", "check", str(src)], check=True)
-        dest = dist_dir / sdist_name
-        shutil.move(src, dest)
-
-    # Build sdist for `xgboost`.
-    with DirectoryExcursion(ROOT):
-        make_pyproject(use_cpu_suffix=0, require_nccl_dep=1)
-
-    with DirectoryExcursion(ROOT / "python-package"):
-        subprocess.run(["python", "-m", "build", "--sdist"], check=True)
-        sdist_name = (
-            f"xgboost-{release}{rc}{rc_ver}.tar.gz"
-            if rc
-            else f"xgboost-{release}.tar.gz"
+            else f"xgboost_cu13-{release}.tar.gz"
         )
         src = DIST / sdist_name
         subprocess.run(["twine", "check", str(src)], check=True)
@@ -145,26 +151,30 @@ def download_python_wheels(branch: str, commit_hash: str, outdir: Path) -> None:
     """Download all Python binary wheels for the specified branch."""
     full_platforms = [
         "win_amd64",
-        "manylinux2014_x86_64",
-        "manylinux2014_aarch64",
+        "win_arm64",
         "manylinux_2_28_x86_64",
         "manylinux_2_28_aarch64",
         "macosx_10_15_x86_64",
         "macosx_12_0_arm64",
     ]
+    cu12_platforms = [
+        "manylinux_2_28_x86_64",
+        "manylinux_2_28_aarch64",
+    ]
     minimal_platforms = [
         "win_amd64",
         "win_arm64",
-        "manylinux2014_x86_64",
-        "manylinux2014_aarch64",
+        "manylinux_2_28_x86_64",
+        "manylinux_2_28_aarch64",
     ]
 
-    # https://s3-us-west-2.amazonaws.com/xgboost-nightly-builds/release_3.0.0/4bfd4bf60d32e2d62426cc4070ccb5a5ba1ed078/xgboost-3.0.0rc1-py3-none-manylinux_2_28_x86_64.whl
+    # https://s3-us-west-2.amazonaws.com/xgboost-nightly-builds/master/f872422eb4a3b11e949f205398ccaa1f98aeb304/xgboost-3.3.0.dev0-py3-none-manylinux_2_28_x86_64.whl
     dir_url = f"{S3_BUCKET_URL}/{branch}/{commit_hash}/"
     wheels = []
     for pkg_name, platforms in [
         ("xgboost", full_platforms),
         ("xgboost_cpu", minimal_platforms),
+        ("xgboost_cu12", cu12_platforms),
     ]:
         src_filename_prefix = f"{pkg_name}-{args.release}-py3-none-"
         target_filename_prefix = f"{pkg_name}-{args.release}-py3-none-"
@@ -174,13 +184,11 @@ def download_python_wheels(branch: str, commit_hash: str, outdir: Path) -> None:
             )
         )
     print(f"List of downloaded wheels: {wheels}")
-    print(
-        """
+    print("""
 Following steps should be done manually:
 - Upload pypi package by `python3 -m twine upload dist/<Package Name>` for all wheels.
 - Check the uploaded files on `https://pypi.org/project/xgboost/<VERSION>/#files` and
-  `pip install xgboost==<VERSION>` """
-    )
+  `pip install xgboost==<VERSION>` """)
 
 
 def download_r_artifacts(
@@ -277,7 +285,12 @@ def release_note(
     hash_note = "\n".join(artifact_hashes)
 
     end_note = f"""
-### Additional artifacts:
+
+### Release notes
+
+https://xgboost.readthedocs.io/en/latest/changes/v{release}.html
+
+### Additional artifacts
 
 You can verify the downloaded packages by running the following command on your Unix shell:
 
@@ -290,7 +303,7 @@ echo "<hash> <artifact>" | shasum -a 256 --check
 ```
 
 **Experimental binary packages for R with CUDA enabled**
-* xgboost_r_gpu_linux_{release}.tar.gz: [Download]({r_gpu_linux_url})
+* xgboost_r_gpu_linux.tar.gz: [Download]({r_gpu_linux_url})
 
 **Source tarball**
 * {tarball_name}: [Download]({src_tarball})"""

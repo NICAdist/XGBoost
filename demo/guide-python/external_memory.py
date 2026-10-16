@@ -1,3 +1,4 @@
+# pylint: disable=duplicate-code
 """
 Experimental support for external memory
 ========================================
@@ -22,38 +23,59 @@ required:
 If `device` is `cuda`, following are also needed:
 
 - cupy
-- rmm
-- python-cuda
+- cuda-python
 
 .. seealso::
 
   :ref:`sphx_glr_python_examples_distributed_extmem_basic.py`
+
+Not shown in this example, but you should pay attention to NUMA configuration as
+discussed in the tutorial.
 
 """
 
 import argparse
 import os
 import tempfile
-from typing import Callable, List, Tuple
+from typing import TYPE_CHECKING, Callable, List, Literal, Tuple
 
 import numpy as np
+import xgboost
 from sklearn.datasets import make_regression
 
-import xgboost
+if TYPE_CHECKING:
+    from cuda.bindings.runtime import cudaError_t
+
+
+def _checkcu(status: "cudaError_t") -> None:
+    import cuda.bindings.runtime as cudart
+
+    if status != cudart.cudaError_t.cudaSuccess:
+        raise RuntimeError(cudart.cudaGetErrorString(status))
+
+
+def device_mem_total() -> int:
+    """The total number of bytes of memory this GPU has."""
+    import cuda.bindings.runtime as cudart
+
+    status, _, total = cudart.cudaMemGetInfo()
+    _checkcu(status)
+    return total
 
 
 def make_batches(
     n_samples_per_batch: int,
     n_features: int,
     n_batches: int,
-    tmpdir: str,
+    work_dir: str,
 ) -> List[Tuple[str, str]]:
+    """Write ``n_batches`` synthetic regression batches as `.npy` pairs under ``work_dir``."""
     files: List[Tuple[str, str]] = []
     rng = np.random.RandomState(1994)
     for i in range(n_batches):
         X, y = make_regression(n_samples_per_batch, n_features, random_state=rng)
-        X_path = os.path.join(tmpdir, "X-" + str(i) + ".npy")
-        y_path = os.path.join(tmpdir, "y-" + str(i) + ".npy")
+        X_path = os.path.join(work_dir, "X-" + str(i) + ".npy")
+        y_path = os.path.join(work_dir, "y-" + str(i) + ".npy")
         np.save(X_path, X)
         np.save(y_path, y)
         files.append((X_path, y_path))
@@ -63,7 +85,9 @@ def make_batches(
 class Iterator(xgboost.DataIter):
     """A custom iterator for loading files in batches."""
 
-    def __init__(self, device: str, file_paths: List[Tuple[str, str]]) -> None:
+    def __init__(
+        self, device: Literal["cpu", "cuda"], file_paths: List[Tuple[str, str]]
+    ) -> None:
         self.device = device
 
         self._file_paths = file_paths
@@ -81,6 +105,8 @@ class Iterator(xgboost.DataIter):
             X = np.load(X_path)
             y = np.load(y_path)
         else:
+            import cupy as cp  # pylint: disable=import-outside-toplevel
+
             X = cp.load(X_path)
             y = cp.load(y_path)
 
@@ -110,7 +136,7 @@ class Iterator(xgboost.DataIter):
 
 def hist_train(it: Iterator) -> None:
     """The hist tree method can use a special data structure `ExtMemQuantileDMatrix` for
-    faster initialization and lower memory usage.
+    faster initialization and lower memory usage (recommended).
 
     .. versionadded:: 3.0.0
 
@@ -128,7 +154,7 @@ def hist_train(it: Iterator) -> None:
 
 
 def approx_train(it: Iterator) -> None:
-    """The approx tree method uses the basic `DMatrix`."""
+    """The approx tree method uses the basic `DMatrix` (not recommended)."""
 
     # For non-data arguments, specify it here once instead of passing them by the `next`
     # method.
@@ -144,46 +170,44 @@ def approx_train(it: Iterator) -> None:
     booster.predict(Xy)
 
 
-def main(tmpdir: str, args: argparse.Namespace) -> None:
+def main(work_dir: str, cli_args: argparse.Namespace) -> None:
     """Entry point for training."""
 
     # generate some random data for demo
     files = make_batches(
-        n_samples_per_batch=1024, n_features=17, n_batches=31, tmpdir=tmpdir
+        n_samples_per_batch=1024, n_features=17, n_batches=31, work_dir=work_dir
     )
-    it = Iterator(args.device, files)
+    it = Iterator(cli_args.device, files)
 
     hist_train(it)
     approx_train(it)
 
 
-def setup_rmm() -> None:
-    """Setup RMM for GPU-based external memory training.
+def setup_async_pool() -> None:
+    """Set up the CUDA async pool for GPU-based external memory training.
 
-    It's important to use RMM with `CudaAsyncMemoryResource` or `ArenaMemoryResource`
-    for GPU-based external memory to improve performance. If XGBoost is not built with
-    RMM support, a warning is raised when constructing the `DMatrix`.
+    .. versionadded:: 3.2.0
 
     """
+    import cuda.bindings.runtime as cudart
+    import cupy as cp
+    from cuda.bindings import driver
+    from cupy.cuda import MemoryAsyncPool
 
-    import rmm
-    from cuda import cudart
-    from rmm.allocators.cupy import rmm_cupy_allocator
-    from rmm.mr import ArenaMemoryResource
+    status, dft_pool = cudart.cudaDeviceGetDefaultMemPool(0)
+    _checkcu(status)
 
-    if not xgboost.build_info()["USE_RMM"]:
-        return
+    total = device_mem_total()
 
-    status, free, total = cudart.cudaMemGetInfo()
-    if status != cudart.cudaError_t.cudaSuccess:
-        raise RuntimeError(cudart.cudaGetErrorString(status))
-
-    mr = rmm.mr.CudaMemoryResource()
-    mr = ArenaMemoryResource(mr, arena_size=int(total * 0.9))
-
-    rmm.mr.set_current_device_resource(mr)
+    v = driver.cuuint64_t(int(total * 0.9))
+    (status,) = cudart.cudaMemPoolSetAttribute(
+        dft_pool,
+        cudart.cudaMemPoolAttr.cudaMemPoolAttrReleaseThreshold,
+        v,
+    )
+    _checkcu(status)
     # Set the allocator for cupy as well.
-    cp.cuda.set_allocator(rmm_cupy_allocator)
+    cp.cuda.set_allocator(MemoryAsyncPool().malloc)
 
 
 if __name__ == "__main__":
@@ -191,11 +215,9 @@ if __name__ == "__main__":
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     args = parser.parse_args()
     if args.device == "cuda":
-        import cupy as cp
-
-        setup_rmm()
-        # Make sure XGBoost is using RMM for all allocations.
-        with xgboost.config_context(use_rmm=True):
+        setup_async_pool()
+        # Make sure XGBoost is using the CUDA async pool for all allocations.
+        with xgboost.config_context(use_cuda_async_pool=True):
             with tempfile.TemporaryDirectory() as tmpdir:
                 main(tmpdir, args)
     else:

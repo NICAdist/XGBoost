@@ -53,7 +53,8 @@ NVL <- function(x, val) {
 .REGRESSION_OBJECTIVES <- function() {
   return(c(
     "reg:squarederror", "reg:squaredlogerror", "reg:logistic", "reg:pseudohubererror",
-    "reg:absoluteerror", "reg:quantileerror", "count:poisson", "reg:gamma", "reg:tweedie"
+    "reg:absoluteerror", "reg:quantileerror", "reg:expectileerror", "count:poisson",
+    "reg:gamma", "reg:tweedie"
   ))
 }
 
@@ -482,6 +483,7 @@ xgb.createFolds <- function(y, k) {
 #' \url{https://xgboost.readthedocs.io/en/latest/tutorials/saving_model.html}.
 #'
 #' @examples
+#' \dontshow{RhpcBLASctl::omp_set_num_threads(1)}
 #' data(agaricus.train, package = "xgboost")
 #'
 #' bst <- xgb.train(

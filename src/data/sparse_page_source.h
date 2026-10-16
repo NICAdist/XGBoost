@@ -1,5 +1,5 @@
 /**
- *  Copyright 2014-2024, XGBoost Contributors
+ *  Copyright 2014-2026, XGBoost Contributors
  * \file sparse_page_source.h
  */
 #ifndef XGBOOST_DATA_SPARSE_PAGE_SOURCE_H_
@@ -58,9 +58,7 @@ struct Cache {
     return name + format;
   }
 
-  [[nodiscard]] std::string ShardName() const {
-    return ShardName(this->name, this->format);
-  }
+  [[nodiscard]] std::string ShardName() const { return ShardName(this->name, this->format); }
   [[nodiscard]] bool OnHost() const { return on_host; }
   /**
    * @brief Record a page with size of n_bytes.
@@ -132,9 +130,7 @@ class TryLockGuard {
   explicit TryLockGuard(std::mutex& lock) : lock_{lock} {  // NOLINT
     CHECK(lock_.try_lock()) << "Multiple threads attempting to use Sparse DMatrix.";
   }
-  ~TryLockGuard() {
-    lock_.unlock();
-  }
+  ~TryLockGuard() { lock_.unlock(); }
 };
 
 // Similar to `dmlc::OMPException`, but doesn't need the threads to be joined before rethrow
@@ -178,6 +174,17 @@ class ExceHandler {
   }
 };
 
+template <typename WriterT>
+std::unique_ptr<WriterT> DftCreateWriterImpl(StringView name, std::uint32_t iter) {
+  std::unique_ptr<common::AlignedFileWriteStream> fo;
+  if (iter == 0) {
+    fo = std::make_unique<common::AlignedFileWriteStream>(name, "wb");
+  } else {
+    fo = std::make_unique<common::AlignedFileWriteStream>(name, "ab");
+  }
+  return fo;
+}
+
 /**
  * @brief Default implementation of the stream creater.
  */
@@ -189,18 +196,29 @@ class DefaultFormatStreamPolicy : public F<S> {
 
  public:
   std::unique_ptr<WriterT> CreateWriter(StringView name, std::uint32_t iter) {
-    std::unique_ptr<common::AlignedFileWriteStream> fo;
-    if (iter == 0) {
-      fo = std::make_unique<common::AlignedFileWriteStream>(name, "wb");
-    } else {
-      fo = std::make_unique<common::AlignedFileWriteStream>(name, "ab");
-    }
-    return fo;
+    return DftCreateWriterImpl<WriterT>(name, iter);
   }
 
   std::unique_ptr<ReaderT> CreateReader(StringView name, std::uint64_t offset,
                                         std::uint64_t length) const {
     return std::make_unique<common::PrivateMmapConstStream>(std::string{name}, offset, length);
+  }
+};
+
+template <typename S, template <typename> typename F>
+class MemBufFileReadFormatStreamPolicy : public F<S> {
+ public:
+  using WriterT = common::AlignedFileWriteStream;
+  using ReaderT = common::AlignedResourceReadStream;
+
+ public:
+  std::unique_ptr<WriterT> CreateWriter(StringView name, std::uint32_t iter) {
+    return DftCreateWriterImpl<WriterT>(name, iter);
+  }
+
+  std::unique_ptr<ReaderT> CreateReader(StringView name, std::uint64_t offset,
+                                        std::uint64_t length) const {
+    return std::make_unique<common::MemBufFileReadStream>(std::string{name}, offset, length);
   }
 };
 
@@ -217,6 +235,7 @@ class DefaultFormatPolicy {
     std::unique_ptr<FormatT> fmt{::xgboost::data::CreatePageFormat<S>("raw")};
     return fmt;
   }
+  static void DestroyPage(std::shared_ptr<S>* page) { page->reset(); }
 };
 
 /**
@@ -240,7 +259,7 @@ class SparsePageSourceImpl : public BatchIteratorImpl<S>, public FormatStreamPol
   // Workers for fetching data from external memory.
   common::ThreadPool workers_;
 
-  bool at_end_ {false};
+  bool at_end_{false};
   float missing_;
   std::int32_t nthreads_;
   bst_feature_t n_features_;
@@ -281,9 +300,9 @@ class SparsePageSourceImpl : public BatchIteratorImpl<S>, public FormatStreamPol
 
     exce_.Rethrow();
     // Clear out the existing page before loading new ones. This helps reduce memory usage
-    // when page is not loaded with mmap, in addition, it triggers necessary CUDA
-    // synchronizations by freeing memory.
-    page_.reset();
+    // when page is not loaded with mmap. The destruction policy handles any necessary
+    // synchronizations (e.g., CUDA stream sync for Ellpack pages).
+    this->DestroyPage(&page_);
 
     for (std::int32_t i = 0; i < n_prefetch_batches; ++i, ++fetch_it) {
       bool restart = fetch_it == n_batches;
@@ -297,11 +316,11 @@ class SparsePageSourceImpl : public BatchIteratorImpl<S>, public FormatStreamPol
       if (restart) {
         this->param_.prefetch_copy = true;
       }
-      ring_->at(fetch_it) = this->workers_.Submit([fetch_it, self, this] {
+      auto p = this->param_;
+      ring_->at(fetch_it) = this->workers_.Submit([fetch_it, self, p, this] {
         auto page = std::make_shared<S>();
         this->exce_.Run([&] {
-          std::unique_ptr<typename FormatStreamPolicy::FormatT> fmt{
-              self->CreatePageFormat(self->param_)};
+          std::unique_ptr<typename FormatStreamPolicy::FormatT> fmt{self->CreatePageFormat(p)};
           auto name = self->cache_info_->ShardName();
           auto [offset, length] = self->cache_info_->View(fetch_it);
           std::unique_ptr<typename FormatStreamPolicy::ReaderT> fi{
@@ -340,7 +359,7 @@ class SparsePageSourceImpl : public BatchIteratorImpl<S>, public FormatStreamPol
 
     timer.Stop();
     if (bytes != InvalidPageSize()) {
-      // Not entirely accurate, the kernels doesn't have to flush the data.
+      // Not entirely accurate, the kernel doesn't have to flush the data.
       LOG(INFO) << common::HumanMemUnit(bytes) << " written in " << timer.ElapsedSeconds()
                 << " seconds.";
       cache_info_->Push(bytes);
@@ -360,13 +379,13 @@ class SparsePageSourceImpl : public BatchIteratorImpl<S>, public FormatStreamPol
     monitor_.Init(typeid(S).name());  // not pretty, but works for basic profiling
   }
 
-  SparsePageSourceImpl(SparsePageSourceImpl const &that) = delete;
+  SparsePageSourceImpl(SparsePageSourceImpl const& that) = delete;
 
   ~SparsePageSourceImpl() override {
     // Don't orphan the threads.
     for (auto& fu : *ring_) {
       if (fu.valid()) {
-        fu.get();
+        [[maybe_unused]] auto _ = fu.get();
       }
     }
   }
@@ -378,13 +397,9 @@ class SparsePageSourceImpl : public BatchIteratorImpl<S>, public FormatStreamPol
     return *page_;
   }
 
-  [[nodiscard]] std::shared_ptr<S const> Page() const override {
-    return page_;
-  }
+  [[nodiscard]] std::shared_ptr<S const> Page() const override { return page_; }
 
-  [[nodiscard]] bool AtEnd() const override {
-    return at_end_;
-  }
+  [[nodiscard]] bool AtEnd() const override { return at_end_; }
   // Call this at the last iteration (it == n_batches).
   virtual void EndIter() {
     this->cache_info_->Commit();
@@ -437,7 +452,7 @@ class SparsePageSource : public SparsePageSourceImpl<SparsePage> {
     if (!this->ReadCache()) {
       bool type_error{false};
       CHECK(proxy_);
-      HostAdapterDispatch(
+      cpu_impl::DispatchAny(
           proxy_,
           [&](auto const& adapter_batch) {
             page_->Push(adapter_batch, this->missing_, this->nthreads_);
@@ -459,7 +474,7 @@ class SparsePageSource : public SparsePageSourceImpl<SparsePage> {
                    DMatrixProxy* proxy, float missing, int nthreads, bst_feature_t n_features,
                    bst_idx_t n_batches, std::shared_ptr<Cache> cache)
       : SparsePageSourceImpl(missing, nthreads, n_features, cache),
-        iter_{iter},
+        iter_{std::move(iter)},
         proxy_{proxy},
         n_batches_{n_batches} {
     if (!cache_info_->written) {
@@ -566,7 +581,7 @@ class CSCPageSource : public PageSourceIncMixIn<CSCPage> {
  protected:
   void Fetch() final {
     if (!this->ReadCache()) {
-      auto const &csr = source_->Page();
+      auto const& csr = source_->Page();
       this->page_.reset(new CSCPage{});
       // we might be able to optimize this by merging transpose and pushcsc
       this->page_->PushCSC(csr->GetTranspose(n_features_, nthreads_));
@@ -588,7 +603,7 @@ class SortedCSCPageSource : public PageSourceIncMixIn<SortedCSCPage> {
  protected:
   void Fetch() final {
     if (!this->ReadCache()) {
-      auto const &csr = this->source_->Page();
+      auto const& csr = this->source_->Page();
       this->page_.reset(new SortedCSCPage{});
       // we might be able to optimize this by merging transpose and pushcsc
       this->page_->PushCSC(csr->GetTranspose(n_features_, nthreads_));
@@ -601,9 +616,8 @@ class SortedCSCPageSource : public PageSourceIncMixIn<SortedCSCPage> {
   }
 
  public:
-  SortedCSCPageSource(float missing, int nthreads, bst_feature_t n_features,
-                      uint32_t n_batches, std::shared_ptr<Cache> cache,
-                      std::shared_ptr<SparsePageSource> source)
+  SortedCSCPageSource(float missing, int nthreads, bst_feature_t n_features, uint32_t n_batches,
+                      std::shared_ptr<Cache> cache, std::shared_ptr<SparsePageSource> source)
       : PageSourceIncMixIn(missing, nthreads, n_features, n_batches, cache, true) {
     this->source_ = source;
     this->Fetch();

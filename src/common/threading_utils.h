@@ -1,5 +1,5 @@
 /**
- * Copyright 2019-2025, XGBoost Contributors
+ * Copyright 2019-2026, XGBoost Contributors
  */
 #ifndef XGBOOST_COMMON_THREADING_UTILS_H_
 #define XGBOOST_COMMON_THREADING_UTILS_H_
@@ -17,6 +17,7 @@
 #include <utility>      // for forward
 #include <vector>       // for vector
 
+#include "common.h"  // for DivRoundUp
 #include "xgboost/logging.h"
 #include "xgboost/string_view.h"  // for StringView
 
@@ -40,23 +41,20 @@ namespace xgboost::common {
 // Inspired by tbb::blocked_range
 class Range1d {
  public:
-  Range1d(size_t begin, size_t end): begin_(begin), end_(end) {
-    CHECK_LT(begin, end);
-  }
+  Range1d(std::size_t begin, std::size_t end) : begin_{begin}, end_{end} { CHECK_LT(begin, end); }
 
-  size_t begin() const {  // NOLINT
+  [[nodiscard]] std::size_t begin() const {  // NOLINT
     return begin_;
   }
-
-  size_t end() const {  // NOLINT
+  [[nodiscard]] std::size_t end() const {  // NOLINT
     return end_;
   }
+  [[nodiscard]] std::size_t Size() const { return this->end() - this->begin(); }
 
  private:
-  size_t begin_;
-  size_t end_;
+  std::size_t begin_;
+  std::size_t end_;
 };
-
 
 // Split 2d space to balanced blocks
 // Implementation of the class is inspired by tbb::blocked_range2d
@@ -105,9 +103,7 @@ class BlockedSpace2d {
   }
 
   // Amount of blocks(tasks) in a space
-  [[nodiscard]] std::size_t Size() const {
-    return ranges_.size();
-  }
+  [[nodiscard]] std::size_t Size() const { return ranges_.size(); }
 
   // get index of the first dimension of i-th block(task)
   [[nodiscard]] std::size_t GetFirstDimension(std::size_t i) const {
@@ -138,10 +134,9 @@ class BlockedSpace2d {
   std::vector<std::size_t> first_dimension_;
 };
 
-
 // Wrapper to implement nested parallelism with simple omp parallel for
 template <typename Func>
-void ParallelFor2d(const BlockedSpace2d& space, int n_threads, Func&& func) {
+void ParallelFor2d(const BlockedSpace2d& space, std::int32_t n_threads, Func&& func) {
   static_assert(std::is_void_v<std::invoke_result_t<Func, std::size_t, Range1d>>);
   std::size_t n_blocks_in_space = space.Size();
   CHECK_GE(n_threads, 1);
@@ -202,48 +197,48 @@ void ParallelFor(Index size, std::int32_t n_threads, Sched sched, Func&& fn) {
 
   dmlc::OMPException exc;
   switch (sched.sched) {
-  case Sched::kAuto: {
+    case Sched::kAuto: {
 #pragma omp parallel for num_threads(n_threads)
-    for (OmpInd i = 0; i < length; ++i) {
-      exc.Run(fn, i);
+      for (OmpInd i = 0; i < length; ++i) {
+        exc.Run(fn, i);
+      }
+      break;
     }
-    break;
-  }
-  case Sched::kDynamic: {
-    if (sched.chunk == 0) {
+    case Sched::kDynamic: {
+      if (sched.chunk == 0) {
 #pragma omp parallel for num_threads(n_threads) schedule(dynamic)
-      for (OmpInd i = 0; i < length; ++i) {
-        exc.Run(fn, i);
-      }
-    } else {
+        for (OmpInd i = 0; i < length; ++i) {
+          exc.Run(fn, i);
+        }
+      } else {
 #pragma omp parallel for num_threads(n_threads) schedule(dynamic, sched.chunk)
-      for (OmpInd i = 0; i < length; ++i) {
-        exc.Run(fn, i);
+        for (OmpInd i = 0; i < length; ++i) {
+          exc.Run(fn, i);
+        }
       }
+      break;
     }
-    break;
-  }
-  case Sched::kStatic: {
-    if (sched.chunk == 0) {
+    case Sched::kStatic: {
+      if (sched.chunk == 0) {
 #pragma omp parallel for num_threads(n_threads) schedule(static)
-      for (OmpInd i = 0; i < length; ++i) {
-        exc.Run(fn, i);
-      }
-    } else {
+        for (OmpInd i = 0; i < length; ++i) {
+          exc.Run(fn, i);
+        }
+      } else {
 #pragma omp parallel for num_threads(n_threads) schedule(static, sched.chunk)
+        for (OmpInd i = 0; i < length; ++i) {
+          exc.Run(fn, i);
+        }
+      }
+      break;
+    }
+    case Sched::kGuided: {
+#pragma omp parallel for num_threads(n_threads) schedule(guided)
       for (OmpInd i = 0; i < length; ++i) {
         exc.Run(fn, i);
       }
+      break;
     }
-    break;
-  }
-  case Sched::kGuided: {
-#pragma omp parallel for num_threads(n_threads) schedule(guided)
-    for (OmpInd i = 0; i < length; ++i) {
-      exc.Run(fn, i);
-    }
-    break;
-  }
   }
   exc.Rethrow();
 }
@@ -253,6 +248,43 @@ void ParallelFor(Index size, std::int32_t n_threads, Func&& fn) {
   ParallelFor(size, n_threads, Sched::Static(), std::forward<Func>(fn));
 }
 
+/**
+ * @brief 1-d block-based parallel for loop.
+ *
+ * @tparam kBlockOfRowsSize The size of the block.
+ * @tparam Index The type of the index.
+ * @tparam Func The type of the function.
+ *
+ * @param size The size of the range.
+ * @param n_threads The number of threads.
+ * @param fn The function to execute. The function should take a Range1d as an argument.
+ */
+template <std::size_t kBlockOfRowsSize, typename Index, typename Func>
+void ParallelFor1d(Index size, std::int32_t n_threads, Func&& fn) {
+  static_assert(std::is_void_v<std::invoke_result_t<Func, common::Range1d>>);
+  auto const n_blocks = DivRoundUp(size, kBlockOfRowsSize);
+  common::ParallelFor(n_blocks, n_threads, [&](auto block_id) {
+    std::size_t const block_beg = block_id * kBlockOfRowsSize;
+    auto const block_size = std::min(static_cast<std::size_t>(size - block_beg), kBlockOfRowsSize);
+    fn(common::Range1d{block_beg, block_beg + block_size});
+  });
+}
+
+/** @brief Use n_threads as the number of blocks. */
+template <typename Index, typename Func>
+void ParallelForBlock(Index size, std::int32_t n_threads, Func&& fn) {
+  static_assert(std::is_void_v<std::invoke_result_t<Func, common::Range1d>>);
+  std::size_t blk_size = size / n_threads + (size % n_threads > 0);
+  ParallelFor(n_threads, n_threads, [&](auto tid) {
+    auto blk_beg = tid * blk_size;
+    auto blk_end = std::min((tid + 1) * blk_size, static_cast<std::size_t>(size));
+    if (blk_end <= blk_beg) {
+      return;
+    }
+    fn(common::Range1d{blk_beg, blk_end});
+  });
+}
+
 inline std::int32_t OmpGetThreadLimit() {
   std::int32_t limit = omp_get_thread_limit();
   CHECK_GE(limit, 1) << "Invalid thread limit for OpenMP.";
@@ -260,9 +292,9 @@ inline std::int32_t OmpGetThreadLimit() {
 }
 
 /**
- * \brief Get thread limit from CFS.
+ * @brief Get thread limit from CFS.
  *
- *   This function has non-trivial overhead and should not be called repeatly.
+ * This function has non-trivial overhead and should not be called repeatedly.
  */
 std::int32_t GetCfsCPUCount() noexcept;
 
@@ -271,10 +303,11 @@ std::int32_t GetCfsCPUCount() noexcept;
  */
 std::int32_t OmpGetNumThreads(std::int32_t n_threads) noexcept(true);
 
-/*!
- * \brief A C-style array with in-stack allocation. As long as the array is smaller than
- * MaxStackSize, it will be allocated inside the stack. Otherwise, it will be
- * heap-allocated.
+/**
+ * @brief A C-style array with in-stack allocation.
+ *
+ * As long as the array is smaller than MaxStackSize, it will be allocated inside the
+ * stack. Otherwise, it will be heap-allocated.
  */
 template <typename T, std::size_t MaxStackSize>
 class MemStackAllocator {
@@ -318,12 +351,6 @@ class MemStackAllocator {
  * @brief Constant that can be used for initializing static thread local memory.
  */
 std::int32_t constexpr DefaultMaxThreads() { return 128; }
-
-/**
- * @brief Get numa node on Linux. Other platforms are not supported. Returns false if the
- *        call fails.
- */
-[[nodiscard]] bool GetCpuNuma(unsigned int* cpu, unsigned int* numa);
 
 /**
  * @brief Give the thread a name. Supports only pthread on linux.

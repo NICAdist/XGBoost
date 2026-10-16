@@ -40,6 +40,21 @@ in order to add XGBoost4J-Spark as a dependency for your project. We provide bot
   Also, make sure to install Spark directly from `Apache website <https://spark.apache.org/>`_. **Upstream XGBoost is not guaranteed to
   work with third-party distributions of Spark, such as Cloudera Spark.** Consult appropriate third parties to obtain their distribution of XGBoost.
 
+.. warning:: Spark 4.0.0 is not compatible with XGBoost4J-Spark
+
+  Apache Spark 4.0.0 introduced a breaking change to the ``org.apache.spark.ml.param.Param`` class
+  constructor (`SPARK-52259 <https://issues.apache.org/jira/browse/SPARK-52259>`_), which causes a
+  ``NoSuchMethodError`` when instantiating any XGBoost estimator:
+
+  .. code-block:: text
+
+    java.lang.NoSuchMethodError: 'void org.apache.spark.ml.param.Param.<init>(
+        org.apache.spark.ml.util.Identifiable, java.lang.String, java.lang.String, scala.Function1)'
+
+  This issue affects all third-party ML libraries that use ``Param``. It was fixed in
+  **Spark 4.0.1** and **Spark 4.1.0**. If you are using Spark 4.x, please upgrade to
+  **Spark 4.0.1 or later**.
+
 Data Preparation
 ================
 
@@ -133,7 +148,7 @@ labels. A DataFrame like this (containing vector-represented features and numeri
 Dealing with missing values
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-XGBoost supports missing values by default (`as desribed here <https://xgboost.readthedocs.io/en/latest/faq.html#how-to-deal-with-missing-values>`_).
+XGBoost supports missing values by default (`as described here <https://xgboost.readthedocs.io/en/latest/faq.html#how-to-deal-with-missing-values>`_).
 If given a SparseVector, XGBoost will treat any values absent from the SparseVector as missing. You are also able to
 specify to XGBoost to treat a specific value in your Dataset as if it was a missing value. By default XGBoost will treat NaN as the value representing missing.
 
@@ -428,7 +443,7 @@ After we get the PipelineModel, we can make prediction on the test dataset and e
   val evaluator = new MulticlassClassificationEvaluator()
   val accuracy = evaluator.evaluate(prediction)
 
-Pipeline with Hyper-parameter Tunning
+Pipeline with Hyper-parameter Tuning
 =====================================
 The most critical operation to maximize the power of XGBoost is to select the optimal parameters for the model.
 Tuning parameters manually is a tedious and labor-consuming process. With the latest version of XGBoost4J-Spark,

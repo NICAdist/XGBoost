@@ -4,7 +4,7 @@ if(PLUGIN_SYCL)
   string(REPLACE " -isystem ${CONDA_PREFIX}/include" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 endif()
 
-project(xgboost LANGUAGES CXX C VERSION 3.0.5)
+project(xgboost LANGUAGES CXX C VERSION 3.4.1)
 include(cmake/Utils.cmake)
 list(APPEND CMAKE_MODULE_PATH "${xgboost_SOURCE_DIR}/cmake/modules")
 
@@ -53,6 +53,8 @@ option(USE_OPENMP "Build with OpenMP support." ON)
 option(BUILD_STATIC_LIB "Build static library" OFF)
 option(BUILD_DEPRECATED_CLI "Build the deprecated command line interface" OFF)
 option(FORCE_SHARED_CRT "Build with dynamic CRT on Windows (/MD)" OFF)
+option(BUILD_WITH_GIT_HASH "Add a short git hash to the build info." OFF)
+option(BUILD_WITH_SYSTEM_DMLC "Use system package for dmlc." OFF)
 ## Bindings
 option(JVM_BINDINGS "Build JVM bindings" OFF)
 option(R_LIB "Build shared library for R package" OFF)
@@ -69,9 +71,16 @@ option(USE_NVTX "Build with cuda profiling annotations. Developers only." OFF)
 set(NVTX_HEADER_DIR "" CACHE PATH "Path to the stand-alone nvtx header")
 option(HIDE_CXX_SYMBOLS "Build shared library and hide all C++ symbols" OFF)
 option(KEEP_BUILD_ARTIFACTS_IN_BINARY_DIR "Output build artifacts in CMake binary dir" OFF)
+# When ON, suppress install() rules intended for system installs (headers,
+# xgboost-config.cmake, XGBoostTargets, xgboost.pc, default lib install).
+# Used by python-package/CMakeLists.txt so the Python wheel's install layout
+# is fully controlled there.
+option(__XGBOOST_FOR_PYTHON_WHEEL
+  "Building libxgboost embedded inside the Python wheel; skip default installs" OFF)
 ## CUDA
 option(USE_CUDA  "Build with GPU acceleration" OFF)
 option(USE_NCCL  "Build with NCCL to enable distributed GPU support." OFF)
+option(USE_NVCOMP "Build with nvcomp to enable sparse data compression. (experimental)" OFF)
 # This is specifically designed for PyPI binary release and should be disabled for most of the cases.
 option(USE_DLOPEN_NCCL "Whether to load nccl dynamically." OFF)
 option(BUILD_WITH_SHARED_NCCL "Build with shared NCCL library." OFF)
@@ -124,6 +133,9 @@ endif()
 if(USE_NCCL AND (NOT USE_CUDA))
   message(SEND_ERROR "`USE_NCCL` must be enabled with `USE_CUDA` flag.")
 endif()
+if(USE_NVCOMP AND (NOT USE_CUDA))
+  message(SEND_ERROR "`USE_NVCOMP` must be enabled with `USE_CUDA` flag.")
+endif()
 if(USE_DEVICE_DEBUG AND (NOT USE_CUDA))
   message(SEND_ERROR "`USE_DEVICE_DEBUG` must be enabled with `USE_CUDA` flag.")
 endif()
@@ -144,6 +156,9 @@ if(R_LIB AND GOOGLE_TEST)
     WARNING
     "Some C++ tests will fail with `R_LIB` enabled, as R package redirects some functions to R runtime implementation."
   )
+endif()
+if(R_LIB AND USE_NCCL)
+  message(SEND_ERROR "`R_LIB` doesn't support distributed computing with NCCL yet.")
 endif()
 if(PLUGIN_RMM AND NOT (USE_CUDA))
   message(SEND_ERROR "`PLUGIN_RMM` must be enabled with `USE_CUDA` flag.")
@@ -199,6 +214,12 @@ endif()
 if(PLUGIN_DENSE_PARSER)
   message(SEND_ERROR "The option `PLUGIN_DENSE_PARSER` has been removed from XGBoost.")
 endif()
+if(BUILD_DEPRECATED_CLI)
+  message(SEND_ERROR  "The option `BUILD_DEPRECATED_CLI` is removed from XGBoost.")
+endif()
+if(USE_NCCL_LIB_PATH)
+  message(SEND_ERROR "`USE_NCCL_LIB_PATH` has been removed, use other NCCL variables to specify the path.")
+endif()
 
 #-- Sanitizer
 if(USE_SANITIZER)
@@ -221,15 +242,25 @@ if(USE_CUDA)
   endif()
 
   enable_language(CUDA)
-  if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_LESS 11.0)
-    message(FATAL_ERROR "CUDA version must be at least 11.0!")
+  if(CMAKE_CUDA_COMPILER_TOOLKIT_VERSION)
+    set(xgboost_cuda_toolkit_version ${CMAKE_CUDA_COMPILER_TOOLKIT_VERSION})
+  else()
+    set(xgboost_cuda_toolkit_version ${CMAKE_CUDA_COMPILER_VERSION})
+  endif()
+  if("${xgboost_cuda_toolkit_version}" VERSION_LESS "12.9")
+    message(FATAL_ERROR "CUDA version must be at least 12.9!")
   endif()
   if(DEFINED GPU_COMPUTE_VER)
     compute_cmake_cuda_archs("${GPU_COMPUTE_VER}")
   endif()
 
-  find_package(CUDAToolkit REQUIRED)
+  find_package(CUDAToolkit 12.9 REQUIRED)
 endif()
+
+if(USE_NVCOMP)
+  find_package(nvcomp REQUIRED)
+endif()
+
 
 if(FORCE_COLORED_OUTPUT AND (CMAKE_GENERATOR STREQUAL "Ninja") AND
     ((CMAKE_CXX_COMPILER_ID STREQUAL "GNU") OR
@@ -237,7 +268,9 @@ if(FORCE_COLORED_OUTPUT AND (CMAKE_GENERATOR STREQUAL "Ninja") AND
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fdiagnostics-color=always")
 endif()
 
-find_package(Threads REQUIRED)
+if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Emscripten"))
+  find_package(Threads REQUIRED)
+endif()
 
 # -- OpenMP
 include(cmake/FindOpenMPMacOS.cmake)
@@ -245,7 +278,7 @@ if(USE_OPENMP)
   if(APPLE)
     find_openmp_macos()
   else()
-    find_package(OpenMP REQUIRED)
+    find_package(OpenMP REQUIRED C CXX)
   endif()
 endif()
 
@@ -271,7 +304,12 @@ endif()
 
 # dmlc-core
 set(DMLC_FORCE_SHARED_CRT ${FORCE_SHARED_CRT})
-add_subdirectory(${xgboost_SOURCE_DIR}/dmlc-core)
+if(BUILD_WITH_SYSTEM_DMLC)
+  find_package(dmlc REQUIRED)
+else()
+  set(DMLC_FORCE_SHARED_CRT ${FORCE_SHARED_CRT})
+  add_subdirectory(${xgboost_SOURCE_DIR}/dmlc-core)
+endif()
 
 if(MSVC)
   if(TARGET dmlc_unit_tests)
@@ -284,7 +322,12 @@ endif()
 
 # core xgboost
 add_subdirectory(${xgboost_SOURCE_DIR}/src)
-target_link_libraries(objxgboost PUBLIC dmlc)
+# dmlc-core
+if(BUILD_WTIH_SYSTEM_DMLC)
+  target_link_libraries(objxgboost PUBLIC ${dmlc-LIBRARIES})
+else()
+  target_link_libraries(objxgboost PUBLIC dmlc)
+endif()
 
 # Link -lstdc++fs for GCC 8.x
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
@@ -318,21 +361,24 @@ if(PLUGIN_RMM)
   # Pick up patched CCCL from RMM
 elseif(USE_CUDA)
   # If using CUDA and not RMM, search for CCCL.
-  find_package(CCCL CONFIG)
+  # Use HINTS to prioritize CCCL from the same CUDA toolkit as nvcc (e.g., in conda environments).
+  # CUDAToolkit_TARGET_DIR points to the target-specific directory (e.g., targets/x86_64-linux).
+  find_package(CCCL CONFIG
+    HINTS ${CUDAToolkit_TARGET_DIR}/lib/cmake ${CUDAToolkit_LIBRARY_DIR}/cmake)
   if(CCCL_FOUND)
     message(STATUS "Standalone CCCL found.")
   else()
     message(STATUS "Standalone CCCL not found. Attempting to use CCCL from CUDA Toolkit...")
     find_package(CCCL CONFIG
-      HINTS ${CUDAToolkit_LIBRARY_DIR}/cmake)
+      HINTS ${CUDAToolkit_TARGET_DIR}/lib/cmake ${CUDAToolkit_LIBRARY_DIR}/cmake)
     if(NOT CCCL_FOUND)
       message(STATUS "Could not locate CCCL from CUDA Toolkit. Using Thrust and CUB from CUDA Toolkit...")
       find_package(libcudacxx CONFIG REQUIRED
-        HINTS ${CUDAToolkit_LIBRARY_DIR}/cmake)
+        HINTS ${CUDAToolkit_TARGET_DIR}/lib/cmake ${CUDAToolkit_LIBRARY_DIR}/cmake)
       find_package(CUB CONFIG REQUIRED
-        HINTS ${CUDAToolkit_LIBRARY_DIR}/cmake)
+        HINTS ${CUDAToolkit_TARGET_DIR}/lib/cmake ${CUDAToolkit_LIBRARY_DIR}/cmake)
       find_package(Thrust CONFIG REQUIRED
-        HINTS ${CUDAToolkit_LIBRARY_DIR}/cmake)
+        HINTS ${CUDAToolkit_TARGET_DIR}/lib/cmake ${CUDAToolkit_LIBRARY_DIR}/cmake)
       thrust_create_target(Thrust HOST CPP DEVICE CUDA)
       add_library(CCCL::CCCL INTERFACE IMPORTED GLOBAL)
       target_link_libraries(CCCL::CCCL INTERFACE libcudacxx::libcudacxx CUB::CUB Thrust)
@@ -348,7 +394,7 @@ if(PLUGIN_SYCL)
   set(CMAKE_CXX_LINK_EXECUTABLE
       "icpx <FLAGS> <CMAKE_CXX_LINK_FLAGS> -qopenmp <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>")
   set(CMAKE_CXX_CREATE_SHARED_LIBRARY
-      "icpx <CMAKE_SHARED_LIBRARY_CXX_FLAGS> -qopenmp <LANGUAGE_COMPILE_FLAGS> \
+      "icpx -shared <CMAKE_SHARED_LIBRARY_CXX_FLAGS> -qopenmp <LANGUAGE_COMPILE_FLAGS> \
       <CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS> <SONAME_FLAG>,<TARGET_SONAME> \
       -o <TARGET> <OBJECTS> <LINK_LIBRARIES>")
 endif()
@@ -357,7 +403,11 @@ endif()
 if(BUILD_STATIC_LIB)
   add_library(xgboost STATIC)
 else()
+  # Provide versioned shared object
   add_library(xgboost SHARED)
+  set_target_properties(xgboost PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR})
 endif()
 target_link_libraries(xgboost PRIVATE objxgboost)
 target_include_directories(xgboost
@@ -366,34 +416,17 @@ target_include_directories(xgboost
   $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>)
 #-- End shared library
 
-#-- CLI for xgboost
-if(BUILD_DEPRECATED_CLI)
-  add_executable(runxgboost ${xgboost_SOURCE_DIR}/src/cli_main.cc)
-  target_link_libraries(runxgboost PRIVATE objxgboost)
-  target_include_directories(runxgboost
-    PRIVATE
-    ${xgboost_SOURCE_DIR}/include
-    ${xgboost_SOURCE_DIR}/dmlc-core/include
-  )
-  set_target_properties(runxgboost PROPERTIES OUTPUT_NAME xgboost)
-  xgboost_target_properties(runxgboost)
-  xgboost_target_link_libraries(runxgboost)
-  xgboost_target_defs(runxgboost)
-
-  if(KEEP_BUILD_ARTIFACTS_IN_BINARY_DIR)
-    set_output_directory(runxgboost ${xgboost_BINARY_DIR})
-  else()
-    set_output_directory(runxgboost ${xgboost_SOURCE_DIR})
-  endif()
-endif()
-#-- End CLI for xgboost
-
 # Common setup for all targets
-foreach(target xgboost objxgboost dmlc)
+foreach(target xgboost objxgboost)
   xgboost_target_properties(${target})
   xgboost_target_link_libraries(${target})
   xgboost_target_defs(${target})
 endforeach()
+if(NOT BUILD_WITH_SYSTEM_DMLC)
+  xgboost_target_properties(dmlc)
+  xgboost_target_link_libraries(dmlc)
+  xgboost_target_defs(dmlc)
+endif()
 
 if(JVM_BINDINGS)
   xgboost_target_properties(xgboost4j)
@@ -401,7 +434,7 @@ if(JVM_BINDINGS)
   xgboost_target_defs(xgboost4j)
 endif()
 
-if(USE_OPENMP AND APPLE)
+if(USE_OPENMP AND APPLE AND NOT BUILD_STATIC_LIB)
   patch_openmp_path_macos(xgboost libxgboost)
 endif()
 
@@ -409,11 +442,6 @@ if(KEEP_BUILD_ARTIFACTS_IN_BINARY_DIR)
   set_output_directory(xgboost ${xgboost_BINARY_DIR}/lib)
 else()
   set_output_directory(xgboost ${xgboost_SOURCE_DIR}/lib)
-endif()
-
-# Ensure these two targets do not build simultaneously, as they produce outputs with conflicting names
-if(BUILD_DEPRECATED_CLI)
-  add_dependencies(xgboost runxgboost)
 endif()
 
 #-- Installing XGBoost
@@ -438,56 +466,56 @@ endif()
 include(CPack)
 
 include(GNUInstallDirs)
-# Install all headers.  Please note that currently the C++ headers does not form an "API".
-install(DIRECTORY ${xgboost_SOURCE_DIR}/include/xgboost
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+mark_as_advanced(__XGBOOST_FOR_PYTHON_WHEEL)
+if(NOT __XGBOOST_FOR_PYTHON_WHEEL)
+  # Install all headers.  Please note that currently the C++ headers does not form an "API".
+  install(DIRECTORY ${xgboost_SOURCE_DIR}/include/xgboost
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-# Install libraries. If `xgboost` is a static lib, specify `objxgboost` also, to avoid the
-# following error:
-#
-#  > install(EXPORT ...) includes target "xgboost" which requires target "objxgboost" that is not
-#  > in any export set.
-#
-# https://github.com/dmlc/xgboost/issues/6085
-if(BUILD_STATIC_LIB)
-  if(BUILD_DEPRECATED_CLI)
-    set(INSTALL_TARGETS xgboost runxgboost objxgboost dmlc)
-  else()
+  # Install libraries. If `xgboost` is a static lib, specify `objxgboost` also, to avoid the
+  # following error:
+  #
+  #  > install(EXPORT ...) includes target "xgboost" which requires target "objxgboost" that is not
+  #  > in any export set.
+  #
+  # https://github.com/dmlc/xgboost/issues/6085
+  if(BUILD_STATIC_LIB)
     set(INSTALL_TARGETS xgboost objxgboost dmlc)
-  endif()
-else()
-  if(BUILD_DEPRECATED_CLI)
-    set(INSTALL_TARGETS xgboost runxgboost)
   else()
     set(INSTALL_TARGETS xgboost)
   endif()
+
+  install(TARGETS ${INSTALL_TARGETS}
+    EXPORT XGBoostTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${LIBLEGACY_INCLUDE_DIRS})
+  install(EXPORT XGBoostTargets
+    FILE XGBoostTargets.cmake
+    NAMESPACE xgboost::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgboost)
+
+  include(CMakePackageConfigHelpers)
+  configure_package_config_file(
+    ${CMAKE_CURRENT_LIST_DIR}/cmake/xgboost-config.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/cmake/xgboost-config.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgboost)
+  write_basic_package_version_file(
+    ${CMAKE_BINARY_DIR}/cmake/xgboost-config-version.cmake
+    VERSION ${XGBOOST_VERSION}
+    COMPATIBILITY AnyNewerVersion)
+  install(
+    FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/cmake/xgboost-config.cmake
+    ${CMAKE_BINARY_DIR}/cmake/xgboost-config-version.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgboost)
+  if(USE_NCCL AND BUILD_STATIC_LIB)
+    install(
+      FILES ${CMAKE_CURRENT_LIST_DIR}/cmake/modules/FindNccl.cmake
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgboost)
+  endif()
 endif()
-
-install(TARGETS ${INSTALL_TARGETS}
-  EXPORT XGBoostTargets
-  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-  INCLUDES DESTINATION ${LIBLEGACY_INCLUDE_DIRS})
-install(EXPORT XGBoostTargets
-  FILE XGBoostTargets.cmake
-  NAMESPACE xgboost::
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgboost)
-
-include(CMakePackageConfigHelpers)
-configure_package_config_file(
-  ${CMAKE_CURRENT_LIST_DIR}/cmake/xgboost-config.cmake.in
-  ${CMAKE_CURRENT_BINARY_DIR}/cmake/xgboost-config.cmake
-  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgboost)
-write_basic_package_version_file(
-  ${CMAKE_BINARY_DIR}/cmake/xgboost-config-version.cmake
-  VERSION ${XGBOOST_VERSION}
-  COMPATIBILITY AnyNewerVersion)
-install(
-  FILES
-  ${CMAKE_CURRENT_BINARY_DIR}/cmake/xgboost-config.cmake
-  ${CMAKE_BINARY_DIR}/cmake/xgboost-config-version.cmake
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/xgboost)
 
 #-- Test
 if(GOOGLE_TEST)
@@ -505,25 +533,10 @@ if(GOOGLE_TEST)
     NAME TestXGBoostLib
     COMMAND testxgboost
     WORKING_DIRECTORY ${xgboost_BINARY_DIR})
-  # CLI tests
-  configure_file(
-    ${xgboost_SOURCE_DIR}/tests/cli/machine.conf.in
-    ${xgboost_BINARY_DIR}/tests/cli/machine.conf
-    @ONLY
-    NEWLINE_STYLE UNIX)
-  if(BUILD_DEPRECATED_CLI)
-    add_test(
-      NAME TestXGBoostCLI
-      COMMAND runxgboost ${xgboost_BINARY_DIR}/tests/cli/machine.conf
-      WORKING_DIRECTORY ${xgboost_BINARY_DIR})
-    set_tests_properties(TestXGBoostCLI
-      PROPERTIES
-      PASS_REGULAR_EXPRESSION ".*test-rmse:0.087.*")
-  endif()
 endif()
 
 # Add xgboost.pc
-if(ADD_PKGCONFIG)
+if(ADD_PKGCONFIG AND NOT __XGBOOST_FOR_PYTHON_WHEEL)
   configure_file(${xgboost_SOURCE_DIR}/cmake/xgboost.pc.in ${xgboost_BINARY_DIR}/xgboost.pc @ONLY)
 
   install(

@@ -11,11 +11,6 @@ XGB_RFLAGS = \
     -DDMLC_ENABLE_STD_THREAD=$(ENABLE_STD_THREAD) \
     -DDMLC_DISABLE_STDIN=1 \
     -DDMLC_LOG_CUSTOMIZE=1
-
-# disable the use of thread_local for 32 bit windows:
-ifeq ($(R_OSTYPE)$(WIN),windows)
-    XGB_RFLAGS += -DDMLC_CXX11_THREAD_LOCAL=0
-endif
 $(foreach v, $(XGB_RFLAGS), $(warning $(v)))
 
 PKG_CPPFLAGS = \
@@ -55,7 +50,6 @@ OBJECTS= \
     $(PKGROOT)/src/objective/lambdarank_obj.o \
     $(PKGROOT)/src/objective/hinge.o \
     $(PKGROOT)/src/objective/aft_obj.o \
-    $(PKGROOT)/src/objective/adaptive.o \
     $(PKGROOT)/src/objective/init_estimation.o \
     $(PKGROOT)/src/objective/quantile_obj.o \
     $(PKGROOT)/src/gbm/gbm.o \
@@ -65,6 +59,7 @@ OBJECTS= \
     $(PKGROOT)/src/gbm/gblinear_model.o \
     $(PKGROOT)/src/data/adapter.o \
     $(PKGROOT)/src/data/array_interface.o \
+    $(PKGROOT)/src/data/cat_container.o \
     $(PKGROOT)/src/data/simple_dmatrix.o \
     $(PKGROOT)/src/data/data.o \
     $(PKGROOT)/src/data/sparse_page_raw_format.o \
@@ -73,7 +68,7 @@ OBJECTS= \
     $(PKGROOT)/src/data/gradient_index.o \
     $(PKGROOT)/src/data/gradient_index_page_source.o \
     $(PKGROOT)/src/data/gradient_index_format.o \
-    $(PKGROOT)/src/data/validation.o \
+    $(PKGROOT)/src/data/metainfo.o \
     $(PKGROOT)/src/data/sparse_page_dmatrix.o \
     $(PKGROOT)/src/data/sparse_page_source.o \
     $(PKGROOT)/src/data/extmem_quantile_dmatrix.o \
@@ -83,11 +78,12 @@ OBJECTS= \
     $(PKGROOT)/src/data/iterative_dmatrix.o \
     $(PKGROOT)/src/predictor/predictor.o \
     $(PKGROOT)/src/predictor/cpu_predictor.o \
-    $(PKGROOT)/src/predictor/cpu_treeshap.o \
+    $(PKGROOT)/src/predictor/interpretability/shap.o \
     $(PKGROOT)/src/tree/constraints.o \
     $(PKGROOT)/src/tree/param.o \
     $(PKGROOT)/src/tree/fit_stump.o \
     $(PKGROOT)/src/tree/tree_model.o \
+    $(PKGROOT)/src/tree/tree_view.o \
     $(PKGROOT)/src/tree/multi_target_tree_model.o \
     $(PKGROOT)/src/tree/tree_updater.o \
     $(PKGROOT)/src/tree/updater_approx.o \
@@ -95,9 +91,9 @@ OBJECTS= \
     $(PKGROOT)/src/tree/updater_prune.o \
     $(PKGROOT)/src/tree/updater_quantile_hist.o \
     $(PKGROOT)/src/tree/updater_refresh.o \
-    $(PKGROOT)/src/tree/updater_sync.o \
-    $(PKGROOT)/src/tree/hist/param.o \
+    $(PKGROOT)/src/tree/hist/hist_param.o \
     $(PKGROOT)/src/tree/hist/histogram.o \
+    $(PKGROOT)/src/tree/hist/sampler.o \
     $(PKGROOT)/src/linear/linear_updater.o \
     $(PKGROOT)/src/linear/updater_coordinate.o \
     $(PKGROOT)/src/linear/updater_shotgun.o \
@@ -116,6 +112,7 @@ OBJECTS= \
     $(PKGROOT)/src/collective/in_memory_handler.o \
     $(PKGROOT)/src/collective/loop.o \
     $(PKGROOT)/src/collective/socket.o \
+    $(PKGROOT)/src/common/cache_manager.o \
     $(PKGROOT)/src/common/charconv.o \
     $(PKGROOT)/src/common/column_matrix.o \
     $(PKGROOT)/src/common/common.o \
@@ -125,7 +122,9 @@ OBJECTS= \
     $(PKGROOT)/src/common/host_device_vector.o \
     $(PKGROOT)/src/common/io.o \
     $(PKGROOT)/src/common/json.o \
+    $(PKGROOT)/src/common/linalg_op.o \
     $(PKGROOT)/src/common/numeric.o \
+    $(PKGROOT)/src/common/optional_weight.o \
     $(PKGROOT)/src/common/pseudo_huber.o \
     $(PKGROOT)/src/common/quantile.o \
     $(PKGROOT)/src/common/random.o \
@@ -133,6 +132,8 @@ OBJECTS= \
     $(PKGROOT)/src/common/survival_util.o \
     $(PKGROOT)/src/common/threading_utils.o \
     $(PKGROOT)/src/common/ranking_utils.o \
+    $(PKGROOT)/src/common/param_array.o \
+    $(PKGROOT)/src/common/expectile_loss_utils.o \
     $(PKGROOT)/src/common/quantile_loss_utils.o \
     $(PKGROOT)/src/common/timer.o \
     $(PKGROOT)/src/common/version.o \

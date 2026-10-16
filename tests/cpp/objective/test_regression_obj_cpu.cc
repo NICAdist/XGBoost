@@ -1,12 +1,10 @@
 /**
- * Copyright 2018-2024, XGBoost contributors
+ * Copyright 2018-2026, XGBoost contributors
  */
 #include <gtest/gtest.h>
 #include <xgboost/context.h>
 #include <xgboost/objective.h>
 
-#include "../../../src/objective/adaptive.h"
-#include "../../../src/tree/param.h"  // for TrainParam
 #include "../helpers.h"
 #include "test_regression_obj.h"
 
@@ -24,6 +22,21 @@ TEST(Objective, DeclareUnifiedTest(SquaredLog)) {
 TEST(Objective, DeclareUnifiedTest(PseudoHuber)) {
   Context ctx = MakeCUDACtx(GPUIDX);
   TestPseudoHuber(&ctx);
+}
+
+TEST(Objective, DeclareUnifiedTest(ExpectileRegressionGPair)) {
+  Context ctx = MakeCUDACtx(GPUIDX);
+  TestExpectileRegressionGPair(&ctx);
+}
+
+TEST(Objective, DeclareUnifiedTest(ExpectileRegressionMultiAlpha)) {
+  Context ctx = MakeCUDACtx(GPUIDX);
+  TestExpectileRegressionMultiAlpha(&ctx);
+}
+
+TEST(Objective, DeclareUnifiedTest(ExpectileRegressionInitEstimation)) {
+  Context ctx = MakeCUDACtx(GPUIDX);
+  TestExpectileRegressionInitEstimation(&ctx);
 }
 
 TEST(Objective, DeclareUnifiedTest(LogisticRegressionGPair)) {
@@ -88,7 +101,7 @@ TEST(Objective, CPU_vs_CUDA) {
   info.labels.Reshape(kRows);
   auto& h_labels = info.labels.Data()->HostVector();
   for (size_t i = 0; i < h_labels.size(); ++i) {
-    h_labels[i] = 1 / static_cast<float>(i+1);
+    h_labels[i] = 1 / static_cast<float>(i + 1);
   }
 
   {
@@ -134,30 +147,4 @@ TEST(Objective, DeclareUnifiedTest(AbsoluteError)) {
   TestAbsoluteError(&ctx);
 }
 
-TEST(Objective, DeclareUnifiedTest(AbsoluteErrorLeaf)) {
-  Context ctx = MakeCUDACtx(GPUIDX);
-  TestAbsoluteErrorLeaf(&ctx);
-}
-
-TEST(Adaptive, DeclareUnifiedTest(MissingLeaf)) {
-  std::vector<bst_node_t> missing{1, 3};
-
-  std::vector<bst_node_t> h_nidx = {2, 4, 5};
-  std::vector<size_t> h_nptr = {0, 4, 8, 16};
-
-  obj::detail::FillMissingLeaf(missing, &h_nidx, &h_nptr);
-
-  ASSERT_EQ(h_nidx[0], missing[0]);
-  ASSERT_EQ(h_nidx[2], missing[1]);
-  ASSERT_EQ(h_nidx[1], 2);
-  ASSERT_EQ(h_nidx[3], 4);
-  ASSERT_EQ(h_nidx[4], 5);
-
-  ASSERT_EQ(h_nptr[0], 0);
-  ASSERT_EQ(h_nptr[1], 0);  // empty
-  ASSERT_EQ(h_nptr[2], 4);
-  ASSERT_EQ(h_nptr[3], 4);  // empty
-  ASSERT_EQ(h_nptr[4], 8);
-  ASSERT_EQ(h_nptr[5], 16);
-}
 }  // namespace xgboost

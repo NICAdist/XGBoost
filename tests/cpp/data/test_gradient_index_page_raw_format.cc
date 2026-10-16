@@ -1,5 +1,5 @@
 /**
- * Copyright 2021-2024, XGBoost contributors
+ * Copyright 2021-2025, XGBoost contributors
  */
 #include <gtest/gtest.h>
 #include <xgboost/context.h>  // for Context
@@ -10,19 +10,20 @@
 #include "../../../src/common/column_matrix.h"  // for common::ColumnMatrix
 #include "../../../src/common/io.h"             // for MmapResource, AlignedResourceReadStream...
 #include "../../../src/data/gradient_index.h"   // for GHistIndexMatrix
-#include "../../../src/data/gradient_index_format.h"  // for GHistIndexRawFormat
-#include "../helpers.h"                               // for RandomDataGenerator
+#include "../../../src/data/gradient_index_format.h"       // for GHistIndexRawFormat
+#include "../../../src/data/gradient_index_page_source.h"  // for GHistIndexFormatPolicy
+#include "../helpers.h"                                    // for RandomDataGenerator
 
 namespace xgboost::data {
 TEST(GHistIndexPageRawFormat, IO) {
   Context ctx;
 
   auto m = RandomDataGenerator{100, 14, 0.5}.GenerateDMatrix();
-  dmlc::TemporaryDirectory tmpdir;
-  std::string path = tmpdir.path + "/ghistindex.page";
+  common::TemporaryDirectory tmpdir;
+  std::string path = tmpdir.Str() + "/ghistindex.page";
   auto batch = BatchParam{256, 0.5};
 
-  common::HistogramCuts cuts;
+  common::HistogramCuts cuts{0};
   for (auto const &index : m->GetBatches<GHistIndexMatrix>(&ctx, batch)) {
     cuts = index.Cuts();
     break;
@@ -46,7 +47,6 @@ TEST(GHistIndexPageRawFormat, IO) {
   for (auto const &gidx : m->GetBatches<GHistIndexMatrix>(&ctx, batch)) {
     auto const &loaded = gidx;
     ASSERT_EQ(loaded.cut.Ptrs(), page.cut.Ptrs());
-    ASSERT_EQ(loaded.cut.MinValues(), page.cut.MinValues());
     ASSERT_EQ(loaded.cut.Values(), page.cut.Values());
     ASSERT_EQ(loaded.base_rowid, page.base_rowid);
     ASSERT_EQ(loaded.row_ptr.size(), page.row_ptr.size());
@@ -58,5 +58,13 @@ TEST(GHistIndexPageRawFormat, IO) {
 
     ASSERT_EQ(loaded.Transpose().GetTypeSize(), loaded.Transpose().GetTypeSize());
   }
+}
+
+TEST(GHistIndexPageRawFormat, File) {
+  auto policy = MemBufFileReadFormatStreamPolicy<GHistIndexMatrix, GHistIndexFormatPolicy>{};
+
+  std::string path = "ghist.page";
+  ASSERT_THAT([&] { policy.CreateReader(StringView{path}, static_cast<bst_idx_t>(0), 0); },
+              GMockThrow("doesn't exist"));
 }
 }  // namespace xgboost::data

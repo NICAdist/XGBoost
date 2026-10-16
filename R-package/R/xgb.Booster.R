@@ -115,8 +115,8 @@ xgb.get.handle <- function(object) {
 #' @param predcontrib Whether to return feature contributions to individual predictions (see Details).
 #' @param approxcontrib Whether to use a fast approximation for feature contributions (see Details).
 #' @param predinteraction Whether to return contributions of feature interactions to individual predictions (see Details).
-#' @param training Whether the prediction result is used for training. For dart booster,
-#'   training predicting will perform dropout.
+#' @param training Whether the prediction result is used for training. When enabled,
+#'   XGBoost uses the training prediction path instead of inplace prediction.
 #' @param iterationrange Sequence of rounds/iterations from the model to use for prediction, specified by passing
 #'   a two-dimensional vector with the start and end numbers in the sequence (same format as R's `seq` - i.e.
 #'   base-1 indexing, and inclusive of both ends).
@@ -252,6 +252,7 @@ xgb.get.handle <- function(object) {
 #'   \url{https://arxiv.org/abs/1706.06060}
 #'
 #' @examples
+#' \dontshow{RhpcBLASctl::omp_set_num_threads(1)}
 #' ## binary classification:
 #'
 #' data(agaricus.train, package = "xgboost")
@@ -382,7 +383,7 @@ predict.xgb.Booster <- function(object, newdata, missing = NA, outputmargin = FA
     inplace_predict_supported <- !predcontrib && !predinteraction && !predleaf
     if (inplace_predict_supported) {
       booster_type <- xgb.booster_type(object)
-      if (booster_type == "gblinear" || (booster_type == "dart" && training)) {
+      if (booster_type == "gblinear" || training) {
         inplace_predict_supported <- FALSE
       }
     }
@@ -1104,8 +1105,9 @@ coef.xgb.Booster <- function(object, ...) {
   if (booster_type != "gblinear") {
     stop("Coefficients are not defined for Booster type ", booster_type)
   }
-  model_json <- jsonlite::fromJSON(rawToChar(xgb.save.raw(object, raw_format = "json")))
-  base_score <- model_json$learner$learner_model_param$base_score
+  model_json <- jsonlite::fromJSON(
+    rawToChar(xgb.save.raw(object, raw_format = "json"))
+  )
   num_feature <- as.numeric(model_json$learner$learner_model_param$num_feature)
 
   weights <- model_json$learner$gradient_booster$model$weights
@@ -1116,6 +1118,9 @@ coef.xgb.Booster <- function(object, ...) {
   sep <- num_feature * n_cols
   coefs <- weights[seq(1, sep)]
   intercepts <- weights[seq(sep + 1, length(weights))]
+  base_score <- jsonlite::fromJSON(
+    model_json$learner$learner_model_param$base_score
+  )
   intercepts <- intercepts + as.numeric(base_score)
 
   if (add_names) {
@@ -1204,6 +1209,14 @@ xgb.copy.Booster <- function(model) {
     stop("'model' must be an 'xgb.Booster' object.")
   }
   return(.Call(XGDuplicate_R, model))
+}
+
+xgb.reset.Booster <- function(model) {
+  if (!inherits(model, "xgb.Booster")) {
+    stop("'model' must be an 'xgb.Booster' object.")
+  }
+  .Call(XGBoosterReset_R, xgb.get.handle(model))
+  return(model)
 }
 
 #' Check if two boosters share the same C object

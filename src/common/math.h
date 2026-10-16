@@ -1,5 +1,5 @@
 /**
- * Copyright 2015-2023 by XGBoost Contributors
+ * Copyright 2015-2026, XGBoost Contributors
  * \file math.h
  * \brief additional math utils
  * \author Tianqi Chen
@@ -18,7 +18,10 @@
 namespace xgboost {
 namespace common {
 
-template <typename T> XGBOOST_DEVICE T Sqr(T const &w) { return w * w; }
+template <typename T>
+XGBOOST_DEVICE T Sqr(T const &w) {
+  return w * w;
+}
 
 /*!
  * \brief calculate the sigmoid of the input.
@@ -38,6 +41,9 @@ XGBOOST_DEVICE inline double Sigmoid(double x) {
   auto y = 1.0 / denom;
   return y;
 }
+
+XGBOOST_DEVICE inline float Logit(float x) { return -logf(1.0f / x - 1.0f); }
+
 /*!
  * \brief Equality test for both integer and floating point.
  */
@@ -47,8 +53,9 @@ XGBOOST_DEVICE constexpr bool CloseTo(T a, U b) {
       std::is_floating_point_v<T> || std::is_floating_point_v<U>, double,
       typename std::conditional_t<std::is_signed_v<T> || std::is_signed_v<U>, std::int64_t,
                                   std::uint64_t>>;
-  return std::is_floating_point_v<Casted> ?
-      std::abs(static_cast<Casted>(a) -static_cast<Casted>(b)) < 1e-6 : a == b;
+  return std::is_floating_point_v<Casted>
+             ? std::abs(static_cast<Casted>(a) - static_cast<Casted>(b)) < 1e-6
+             : a == b;
 }
 
 /*!
@@ -60,13 +67,13 @@ XGBOOST_DEVICE constexpr bool CloseTo(T a, U b) {
  * \param end end iterator of input
  */
 template <typename Iterator>
-XGBOOST_DEVICE inline void Softmax(Iterator start, Iterator end) {
+XGBOOST_DEVICE void Softmax(Iterator start, Iterator end) {
   static_assert(
       std::is_same_v<
           float, typename std::remove_reference_t<decltype(std::declval<Iterator>().operator*())>>,
-      "Values should be of type bst_float");
-  bst_float wmax = *start;
-  for (Iterator i = start+1; i != end; ++i) {
+      "Values should be of type float");
+  float wmax = *start;
+  for (Iterator i = start + 1; i != end; ++i) {
     wmax = fmaxf(*i, wmax);
   }
   double wsum = 0.0f;
@@ -79,6 +86,21 @@ XGBOOST_DEVICE inline void Softmax(Iterator start, Iterator end) {
   }
 }
 
+/** @brief softplus \f$ln(1 + e^x)\f$ */
+template <typename F>
+XGBOOST_DEVICE std::enable_if_t<std::is_floating_point_v<F>, F> SoftPlus(F x) {
+  if (x > 0.0) {
+    return x + std::log1p(std::exp(-x));
+  }
+  return std::log1p(std::exp(x));
+}
+
+template <typename F>
+XGBOOST_DEVICE std::enable_if_t<std::is_floating_point_v<F>, F> SoftPlusInv(F x) {
+  x = std::max(x, kRtEps);
+  return x + std::log(-std::expm1(-x));
+}
+
 /*!
  * \brief Find the maximum iterator within the iterators
  * \param begin The beginning iterator.
@@ -86,7 +108,7 @@ XGBOOST_DEVICE inline void Softmax(Iterator start, Iterator end) {
  * \return the iterator point to the maximum value.
  * \tparam Iterator The type of the iterator.
  */
-template<typename Iterator>
+template <typename Iterator>
 XGBOOST_DEVICE inline Iterator FindMaxIndex(Iterator begin, Iterator end) {
   Iterator maxit = begin;
   for (Iterator it = begin; it != end; ++it) {
@@ -116,7 +138,7 @@ inline float LogSum(float x, float y) {
  * \return the iterator point to the maximum value.
  * \tparam Iterator The type of the iterator.
  */
-template<typename Iterator>
+template <typename Iterator>
 inline float LogSum(Iterator begin, Iterator end) {
   float mx = *begin;
   for (Iterator it = begin; it != end; ++it) {
@@ -166,15 +188,16 @@ double LogGamma(double v);
 
 #else  // Not R or R with GPU.
 
-template<typename T>
+template <typename T>
 XGBOOST_DEVICE inline T LogGamma(T v) {
 #ifdef _MSC_VER
 
 #if _MSC_VER >= 1800
   return lgamma(v);
 #else
-#pragma message("Warning: lgamma function was not available until VS2013"\
-                ", poisson regression will be disabled")
+#pragma message(                                              \
+    "Warning: lgamma function was not available until VS2013" \
+    ", poisson regression will be disabled")
   utils::Error("lgamma function was not available until VS2013");
   return static_cast<T>(1.0);
 #endif  // _MSC_VER >= 1800
